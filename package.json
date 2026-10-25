@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "pnpm --filter @idlebot/api dev",
     "dev:api": "pnpm --filter @idlebot/api dev",
+    "dev:web": "pnpm --filter @idlebot/web dev",
     "build": "pnpm -r --if-present run build",
     "lint": "pnpm -r --if-present run lint",
     "test": "pnpm -r --if-present run test",
