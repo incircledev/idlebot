@@ -1,6 +1,6 @@
 /**
- * Hall data access. Mock localStorage stays the default.
- * `VITE_USE_API=1` uses the cookie session on apps/api.
+ * Hall data access. Dev uses the mock store unless `VITE_USE_API=1`.
+ * Production builds use the cookie session on same-origin `/api`.
  */
 import type { PublicTask, PublicUser } from '@idlebot/contract'
 import { ApiClientError, remoteApi, useRemoteApi } from './apiClient'

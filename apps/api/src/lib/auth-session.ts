@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { user } from "@/db/schema";
 import { getDb } from "@/db/client";
-import { auth } from "@/lib/auth";
+import { getAuth } from "@/lib/auth";
 import { applyCors } from "@/lib/cors";
 import { HttpError, json } from "@/lib/http";
 import { classifyEmail } from "@/lib/market-rules";
@@ -75,7 +75,7 @@ export async function registerWithPassword(request: Request) {
     (typeof body.name === "string" && body.name.trim()) ||
     classified.email.split("@")[0];
 
-  const upstream = await auth.api.signUpEmail({
+  const upstream = await getAuth().api.signUpEmail({
     body: {
       email: classified.email,
       password,
@@ -98,7 +98,7 @@ export async function loginWithPassword(request: Request) {
   const classified = classifyEmail(body.email);
   if ("error" in classified) throw new HttpError(400, classified.error);
   const password = passwordOf(body);
-  const upstream = await auth.api.signInEmail({
+  const upstream = await getAuth().api.signInEmail({
     body: { email: classified.email, password },
     headers: request.headers,
     asResponse: true,

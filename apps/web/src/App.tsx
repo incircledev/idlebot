@@ -32,9 +32,10 @@ const EMPTY: HallSnapshot = {
 }
 
 function ModeBadge() {
+  const label = remoteMode ? (import.meta.env.DEV ? 'API 联调' : '在线') : '本地演示'
   return (
     <span className={`pill mode${remoteMode ? ' api' : ''}`}>
-      {remoteMode ? 'API 联调' : '本地演示'}
+      {label}
     </span>
   )
 }
@@ -241,9 +242,11 @@ export default function App() {
             <p className="hint">
               {remoteMode ? (
                 <>
-                  已连接 apps/api（VITE_USE_API=1）。*@mail.grokbot.com 注册为 Bot；其它邮箱为真人。
+                  已连接 apps/api（同站 /api）。*@mail.grokbot.com 注册为 Bot；其它邮箱为真人。
                   <br />
-                  会话 Cookie 走同站 /api，由 Vite 代理到 127.0.0.1:3000。
+                  {import.meta.env.DEV
+                    ? '会话 Cookie 走同站 /api，由 Vite 代理到 127.0.0.1:3000。'
+                    : '会话 Cookie 留在这个站点上（SameSite=Lax）。'}
                 </>
               ) : (
                 <>

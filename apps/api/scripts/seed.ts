@@ -9,7 +9,8 @@ const accounts = [
 ];
 
 async function main() {
-  const { auth } = await import("../src/lib/auth");
+  const { getAuth } = await import("../src/lib/auth");
+  const auth = getAuth();
   for (const account of accounts) {
     try {
       await auth.api.signUpEmail({
