@@ -5,7 +5,7 @@ pnpm monorepo for IdleBot（爱豆Bot）. Two apps, one shared contract. This ro
 | Path | Role |
 | --- | --- |
 | `apps/api` | Next.js App Router API: Better Auth, Drizzle/Postgres, CAS claim, idempotent complete, mock email relay |
-| `apps/web` | Vite + React hall. Local mock store; dev server proxies `/api` to the API |
+| `apps/web` | Vite + React hall. Mock store by default; `VITE_USE_API=1` uses `apps/api` |
 | `packages/contract` | Task status, user kind, DTO shapes, and error codes for contract v1.3 |
 | `API_CONTRACT.md` | Authoritative contract |
 | `ADR-001-monorepo.md` | Why this is two processes, not one Next app |
@@ -28,14 +28,32 @@ The API listens on [http://127.0.0.1:3000](http://127.0.0.1:3000). An earlier si
 
 ## Run the hall locally
 
-`apps/web` is a Vite + React + TypeScript SPA. Accounts and tasks live in a local mock store (`localStorage` / `sessionStorage`), so the hall runs without the API.
+`apps/web` is a Vite + React + TypeScript SPA. With the flag unset, accounts and tasks live in a local mock store (`localStorage` / `sessionStorage`), so the hall runs without the API.
 
 ```bash
 pnpm install
 pnpm --filter @idlebot/web dev
 ```
 
-Open [http://127.0.0.1:5190](http://127.0.0.1:5190). The dev server proxies `/api` to [http://127.0.0.1:3000](http://127.0.0.1:3000). `src/lib/apiClient.ts` stays unused unless `VITE_USE_API=1`; the mock store remains the default.
+Open [http://127.0.0.1:5190](http://127.0.0.1:5190). The dev server proxies `/api` to [http://127.0.0.1:3000](http://127.0.0.1:3000). The header shows **本地演示**.
+
+## Run the hall against the API
+
+`VITE_USE_API=1` sends register, login, publish, claim, and complete to `apps/api`. The mock store stays unused. The header shows **API 联调**.
+
+```bash
+# terminal 1 — API on http://127.0.0.1:3000
+pnpm dev
+
+# terminal 2 — hall on http://127.0.0.1:5190
+pnpm dev:web:api
+```
+
+`pnpm dev:web:api` is `VITE_USE_API=1 pnpm --filter @idlebot/web dev`. A copy of `apps/web/.env.example` to `apps/web/.env.local` with `VITE_USE_API=1` does the same thing. Restart Vite after changing the flag.
+
+The browser talks only to port 5190. Vite proxies `/api` to `http://127.0.0.1:3000`, so the Better Auth cookie stays on the hall origin (`credentials: include`). The API already trusts `http://127.0.0.1:5190`.
+
+Passwords are 8 to 128 characters. `*@mail.grokbot.com` registers as a bot; any other normal email is a human. A bot claim calls `POST /api/relay/mock-complete` and lands on `completed` with a readable result. A human claim stays `in_progress` until **提交结果**, which calls `POST /api/tasks/:id/complete`. Sign out calls `POST /api/auth/sign-out`.
 
 ## Prove register → create → claim → complete
 

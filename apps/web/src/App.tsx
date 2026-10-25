@@ -5,43 +5,43 @@ import { AuthHallBackdrop } from './components/AuthHallBackdrop'
 import { GuildHall } from './components/GuildHall'
 import { TaskCard } from './components/TaskCard'
 import {
-  afterClaimRelay,
-  claimTask,
-  completeTask,
-  ensureSeedBots,
-  getAccount,
-  getMe,
-  listAllTasks,
-  listBots,
-  listMyTasks,
-  listOpenTasks,
-  login,
-  logout,
-  publishTask,
-  register,
-} from './lib/store'
-import type { Account, Task } from './lib/types'
+  claim,
+  complete,
+  loadHall,
+  loginAccount,
+  logoutAccount,
+  lookup,
+  publish,
+  registerAccount,
+  remoteMode,
+  type HallSnapshot,
+} from './lib/hall'
+import type { Task } from './lib/types'
 import './App.css'
 
 type Panel = null | 'bots' | 'board' | 'mine' | 'publish' | 'auth'
 type AuthMode = 'login' | 'register'
 
-function useStoreTick() {
-  const [tick, setTick] = useState(0)
-  const refresh = useCallback(() => setTick((t) => t + 1), [])
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key?.startsWith('sgb.')) refresh()
-    }
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
-  }, [refresh])
-  return { tick, refresh }
+const EMPTY: HallSnapshot = {
+  me: null,
+  bots: [],
+  openTasks: [],
+  allTasks: [],
+  myTasks: [],
+  directory: {},
+}
+
+function ModeBadge() {
+  return (
+    <span className={`pill mode${remoteMode ? ' api' : ''}`}>
+      {remoteMode ? 'API 联调' : '本地演示'}
+    </span>
+  )
 }
 
 export default function App() {
-  const { tick, refresh } = useStoreTick()
-  const [me, setMe] = useState<Account | null>(null)
+  const [snap, setSnap] = useState<HallSnapshot>(EMPTY)
+  const [ready, setReady] = useState(false)
   const [panel, setPanel] = useState<Panel>(null)
   const [authMode, setAuthMode] = useState<AuthMode>('register')
   const [email, setEmail] = useState('')
@@ -53,169 +53,218 @@ export default function App() {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [toast, setToast] = useState('')
 
-  useEffect(() => {
-    ensureSeedBots()
-    setMe(getMe())
-    refresh()
-  }, [refresh])
+  const reload = useCallback(async () => {
+    const res = await loadHall()
+    if (!res.ok) {
+      setError((prev) => prev || res.error)
+      return null
+    }
+    setSnap(res.data)
+    return res.data
+  }, [])
 
   useEffect(() => {
-    setMe(getMe())
-  }, [tick])
+    let cancelled = false
+    ;(async () => {
+      const res = await loadHall()
+      if (cancelled) return
+      if (!res.ok) setError(res.error)
+      else setSnap(res.data)
+      setReady(true)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
-  const bots = listBots()
-  const openTasks = listOpenTasks()
-  const allTasks = listAllTasks()
-  const myTasks = me ? listMyTasks(me.id) : []
+  useEffect(() => {
+    if (remoteMode) return
+    const onStorage = (e: StorageEvent) => {
+      if (e.key?.startsWith('sgb.')) void reload()
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [reload])
+
+  const { me, bots, openTasks, allTasks, myTasks, directory } = snap
 
   function showToast(msg: string) {
     setToast(msg)
     setTimeout(() => setToast(''), 2800)
   }
 
-  function handleAuth(e: React.FormEvent) {
+  async function handleAuth(e: React.FormEvent) {
     e.preventDefault()
     setError('')
-    const res = authMode === 'register' ? register(email, password, name) : login(email, password)
+    const res =
+      authMode === 'register' ? await registerAccount(email, password, name) : await loginAccount(email, password)
     if (!res.ok) {
       setError(res.error)
       return
     }
-    setMe(res.user)
-    setPanel(null)
     setEmail('')
     setPassword('')
     setName('')
-    refresh()
+    const next = await reload()
+    if (!next?.me) {
+      setError('登录已返回，但会话没有建立。请确认通过大厅的 /api 代理访问，并且浏览器保存了 Cookie。')
+      return
+    }
+    setPanel(null)
     showToast(authMode === 'register' ? '注册成功' : '登录成功')
   }
 
-  function handlePublish(e: React.FormEvent) {
+  async function handlePublish(e: React.FormEvent) {
     e.preventDefault()
-    const res = publishTask(title, body)
+    setError('')
+    const res = await publish(title, body)
     if (!res.ok) {
       setError(res.error)
       return
     }
     setTitle('')
     setBody('')
-    setError('')
+    const next = await reload()
+    if (!next) return
     setPanel('board')
-    refresh()
     showToast('任务已发布到公告板')
   }
 
   async function handleClaim(task: Task) {
     setBusyId(task.id)
     setError('')
-    const res = claimTask(task.id)
+    const res = await claim(task.id)
     if (!res.ok) {
       setError(res.error)
       setBusyId(null)
-      refresh()
+      await reload()
       return
     }
-    const meNow = getMe()
-    if (meNow?.kind === 'bot') {
-      const relay = await afterClaimRelay(res.task)
-      if (relay.previewReply) {
-        const done = completeTask(task.id, relay.previewReply)
-        if (done.ok) showToast('Bot 已通过邮件中继完成任务')
-        else showToast(relay.error || '中继失败')
-      } else if (relay.error) {
-        showToast(relay.error)
-      }
-    } else {
-      showToast('已接取，请提交结果完成任务')
-    }
+    showToast(res.data.autoCompleted ? 'Bot 已通过邮件中继完成任务' : '已接取，请提交结果完成任务')
     setBusyId(null)
-    setMe(getMe())
-    refresh()
+    await reload()
   }
 
-  function handleComplete(task: Task) {
+  async function handleComplete(task: Task) {
     const result = window.prompt('填写任务结果（result）', '人工完成：任务已处理完毕。')
     if (result == null) return
-    const res = completeTask(task.id, result)
+    setError('')
+    const res = await complete(task.id, result)
     if (!res.ok) {
       setError(res.error)
       return
     }
     showToast('任务已完成')
-    refresh()
+    await reload()
   }
 
-  function handleLogout() {
-    logout()
-    setMe(null)
-    setPanel('auth')
-    refresh()
+  async function handleLogout() {
+    setError('')
+    const res = await logoutAccount()
+    if (!res.ok) {
+      setError(res.error)
+      return
+    }
+    const next = await reload()
+    if (next?.me) {
+      setError('退出未生效，会话仍在')
+      return
+    }
+    setPanel(null)
+  }
+
+  if (!ready) {
+    return (
+      <div className="app shell-auth fantasy-app auth-screen" data-mode={remoteMode ? 'api' : 'mock'}>
+        <AuthHallBackdrop />
+        <div className="auth-stack">
+          <header className="topbar">
+            <BrandMark tagline="IdleBot · 空闲额度任务市场 · Demo" promo />
+            <ModeBadge />
+          </header>
+          <p className="auth-card hint">正在连接大厅…</p>
+        </div>
+      </div>
+    )
   }
 
   if (!me) {
     return (
-      <div className="app shell-auth fantasy-app auth-screen">
+      <div className="app shell-auth fantasy-app auth-screen" data-mode={remoteMode ? 'api' : 'mock'}>
         <AuthHallBackdrop />
         <div className="auth-stack">
-        <header className="topbar">
-          <BrandMark tagline="IdleBot · 空闲额度任务市场 · Demo" promo />
-        </header>
-        <form className="auth-card" onSubmit={handleAuth}>
-          <div className="tabs">
-            <button type="button" className={authMode === 'register' ? 'on' : ''} onClick={() => setAuthMode('register')}>
-              注册
-            </button>
-            <button type="button" className={authMode === 'login' ? 'on' : ''} onClick={() => setAuthMode('login')}>
-              登录
-            </button>
-          </div>
-          {authMode === 'register' && (
+          <header className="topbar">
+            <BrandMark tagline="IdleBot · 空闲额度任务市场 · Demo" promo />
+            <ModeBadge />
+          </header>
+          <form className="auth-card" onSubmit={handleAuth}>
+            <div className="tabs">
+              <button type="button" className={authMode === 'register' ? 'on' : ''} onClick={() => setAuthMode('register')}>
+                注册
+              </button>
+              <button type="button" className={authMode === 'login' ? 'on' : ''} onClick={() => setAuthMode('login')}>
+                登录
+              </button>
+            </div>
+            {authMode === 'register' && (
+              <label>
+                显示名
+                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="可选" />
+              </label>
+            )}
             <label>
-              显示名
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="可选" />
+              邮箱
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com 或 bot@mail.grokbot.com"
+                autoComplete="username"
+                required
+              />
             </label>
-          )}
-          <label>
-            邮箱
-            <input
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com 或 bot@mail.grokbot.com"
-              autoComplete="username"
-              required
-            />
-          </label>
-          <label>
-            密码
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Demo 明文存 localStorage"
-              autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
-              required
-            />
-          </label>
-          {error && <p className="err">{error}</p>}
-          <button type="submit" className="btn primary">
-            {authMode === 'register' ? '注册并进入公会' : '登录'}
-          </button>
-          <p className="hint">
-            *@mail.grokbot.com 注册为 Bot（空闲/忙碌）；其它邮箱为真人。
-            <br />
-            预置 Bot：pixel / coral / starry @mail.grokbot.com，密码 demo1234
-          </p>
-        </form>
+            <label>
+              密码
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={remoteMode ? '至少 8 位' : 'Demo 明文存 localStorage'}
+                autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
+                minLength={remoteMode ? 8 : undefined}
+                required
+              />
+            </label>
+            {error && <p className="err">{error}</p>}
+            <button type="submit" className="btn primary">
+              {authMode === 'register' ? '注册并进入公会' : '登录'}
+            </button>
+            <p className="hint">
+              {remoteMode ? (
+                <>
+                  已连接 apps/api（VITE_USE_API=1）。*@mail.grokbot.com 注册为 Bot；其它邮箱为真人。
+                  <br />
+                  会话 Cookie 走同站 /api，由 Vite 代理到 127.0.0.1:3000。
+                </>
+              ) : (
+                <>
+                  *@mail.grokbot.com 注册为 Bot（空闲/忙碌）；其它邮箱为真人。
+                  <br />
+                  预置 Bot：pixel / coral / starry @mail.grokbot.com，密码 demo1234
+                </>
+              )}
+            </p>
+          </form>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="app fantasy-app">
+    <div className="app fantasy-app" data-mode={remoteMode ? 'api' : 'mock'}>
       <header className="topbar">
         <BrandMark tagline="公会大厅 · 先到先得" />
         <div className="top-actions">
+          <ModeBadge />
           {me.kind === 'bot' && (
             <span className={`pill ${me.status === 'busy' ? 'busy' : 'idle'}`}>
               {me.status === 'busy' ? '忙碌' : '空闲'}
@@ -260,7 +309,11 @@ export default function App() {
                     </span>
                   </li>
                 ))}
-                {bots.length === 0 && <li className="empty">暂无 Bot</li>}
+                {bots.length === 0 && (
+                  <li className="empty">
+                    {remoteMode ? '这个标签页还没有登录过 Bot' : '暂无 Bot'}
+                  </li>
+                )}
               </ul>
             )}
 
@@ -271,7 +324,7 @@ export default function App() {
                   <TaskCard
                     key={t.id}
                     task={t}
-                    publisher={getAccount(t.publisherId)}
+                    publisher={lookup(directory, t.publisherId)}
                     action={
                       t.publisherId !== me.id ? (
                         <button
@@ -297,8 +350,8 @@ export default function App() {
                         <TaskCard
                           key={t.id}
                           task={t}
-                          publisher={getAccount(t.publisherId)}
-                          assignee={t.assigneeId ? getAccount(t.assigneeId) : null}
+                          publisher={lookup(directory, t.publisherId)}
+                          assignee={lookup(directory, t.assigneeId)}
                         />
                       ))}
                   </>
@@ -313,10 +366,10 @@ export default function App() {
                   <TaskCard
                     key={t.id}
                     task={t}
-                    publisher={getAccount(t.publisherId)}
-                    assignee={t.assigneeId ? getAccount(t.assigneeId) : null}
+                    publisher={lookup(directory, t.publisherId)}
+                    assignee={lookup(directory, t.assigneeId)}
                     action={
-                      t.status === 'in_progress' && t.assigneeId === me.id && me.kind === 'human' ? (
+                      t.status === 'in_progress' && t.assigneeId === me.id ? (
                         <button type="button" className="btn primary" onClick={() => handleComplete(t)}>
                           提交结果
                         </button>
@@ -335,7 +388,13 @@ export default function App() {
                 </label>
                 <label>
                   简述
-                  <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={5} placeholder="任务详情，纯文本" />
+                  <textarea
+                    value={body}
+                    onChange={(e) => setBody(e.target.value)}
+                    rows={5}
+                    placeholder="任务详情，纯文本"
+                    required={remoteMode}
+                  />
                 </label>
                 <button type="submit" className="btn primary">
                   发布到公告板
