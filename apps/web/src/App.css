@@ -115,6 +115,12 @@ button { cursor: pointer; }
 .pill.busy {
   background: var(--busy); border-color: #B36A3E; color: #fff;
 }
+.pill.mode {
+  background: #5C4A32; border-color: #3D2E1F; color: #F7ECD8; font-weight: 700;
+}
+.pill.mode.api {
+  background: #3D6B4F; border-color: #244832;
+}
 
 /* —— Auth —— */
 .auth-card {
