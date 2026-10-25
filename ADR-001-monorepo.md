@@ -35,6 +35,10 @@ idlebot/
 - 本轮公开发布 / 生产部署（用户明确不着急）
 - P1：failed/超时、唤醒 webhook（契约已标）
 
+## 后续（部署脚手架）
+
+根目录 `vercel.json` 用 Vercel Services（Beta）把 `/` 送到 `apps/web`，把 `/api` 送到 `apps/api`，先用 `*.vercel.app`。步骤在 README「DEPLOY / 环境变量」。该变更不发布生产，也不接自定义域名或真实邮件。
+
 ## 后果
 
 - 一次 PR 可改契约 + 两端；扩展 Agent 入口只动 api

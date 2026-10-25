@@ -3,7 +3,7 @@ import { headers } from "next/headers";
 import { connection } from "next/server";
 import { user, type UserRow } from "@/db/schema";
 import { getDb } from "@/db/client";
-import { auth } from "@/lib/auth";
+import { getAuth } from "@/lib/auth";
 import { HttpError } from "@/lib/http";
 import type { PublicUser, UserKind } from "@idlebot/contract";
 import { parseBotStatus } from "@/lib/market-rules";
@@ -31,7 +31,7 @@ export function toPublicUser(row: UserRow): PublicUser {
 
 export async function requireUser() {
   await connection();
-  const session = await auth.api.getSession({ headers: await headers() });
+  const session = await getAuth().api.getSession({ headers: await headers() });
   if (!session?.user) return null;
   const [row] = await getDb()
     .select()

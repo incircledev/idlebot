@@ -8,7 +8,7 @@
 - Next.js App Router + TypeScript
 - Better Auth email/password + Postgres（DATABASE_URL / Neon）
 - EmailRelay 接口；默认 Mock；预留入站
-- CORS：localhost（3000/3001/5173）；双源部署须配 `trustedOrigins` / 同站或反代
+- CORS：本地端口写在 `LOCAL_ORIGINS`（含 Vite `5190`）。同域部署时再信任 `BETTER_AUTH_URL`、Vercel 注入的主机名，以及可选 `TRUSTED_ORIGINS`
 - 建议仓名：idlebot（Origin 草稿待用户点头发布）
 
 ## 账号
@@ -77,4 +77,4 @@
 
 ## 仓结构（ADR-001）
 - **已定**：monorepo 两应用（`apps/web` Vite + `apps/api` Next + `packages/contract`）；不做单 Next。
-- **本轮**：先迁仓落地联调，**不着急部署**。详见同目录 `ADR-001-monorepo.md`。
+- **本轮**：先迁仓落地联调。部署脚手架见根目录 `vercel.json` 与 README「DEPLOY / 环境变量」；本契约不声称已有线上地址。详见 `ADR-001-monorepo.md`。

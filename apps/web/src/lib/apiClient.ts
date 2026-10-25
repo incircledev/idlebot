@@ -1,9 +1,9 @@
 /**
  * HTTP client for apps/api.
- * The hall calls it only when `VITE_USE_API=1` (`useRemoteApi`).
- * Otherwise the local mock store stays in charge.
- * Requests use relative `/api` URLs so the Vite proxy (→ http://127.0.0.1:3000)
- * keeps the Better Auth cookie on the hall origin.
+ * Dev keeps the local mock unless `VITE_USE_API=1`.
+ * `vite build` calls same-origin `/api` unless `VITE_USE_API=0`.
+ * Requests stay on relative `/api` URLs. The dev server proxies that prefix;
+ * the production bundle does not.
  */
 import {
   ERROR_CODES,
@@ -25,7 +25,9 @@ import {
   type UpdateBotStatusRequest,
 } from '@idlebot/contract'
 
-export const useRemoteApi = import.meta.env.VITE_USE_API === '1'
+export const useRemoteApi =
+  import.meta.env.VITE_USE_API === '1' ||
+  (import.meta.env.PROD && import.meta.env.VITE_USE_API !== '0')
 
 export class ApiClientError extends Error {
   readonly code: ErrorCode

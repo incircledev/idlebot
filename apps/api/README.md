@@ -61,7 +61,7 @@ All paths below are under `/api`. Protected routes return `401` without a sessio
 | POST | `/internal/email/inbound` | Same inbound handler |
 | GET | `/openapi` | OpenAPI 3.1 document |
 
-CORS allows credentials from `http://localhost` and `http://127.0.0.1` on ports `3000`, `3001`, `5173`, `5174`, `4173`, and `5190` (the Vite dev origin), plus the old `43123` draft port. Better Auth `trustedOrigins` uses the same list, so a later Vite proxy of `/api` → `127.0.0.1:3000` can send cookies.
+CORS allows credentials from `http://localhost` and `http://127.0.0.1` on ports `3000`, `3001`, `5173`, `5174`, `4173`, and `5190` (the Vite dev origin), plus the old `43123` draft port. Better Auth `trustedOrigins` uses the same list, so the Vite proxy of `/api` → `127.0.0.1:3000` can send cookies. `BETTER_AUTH_URL`, optional `TRUSTED_ORIGINS`, and the Vercel host variables (`VERCEL_URL`, `VERCEL_PROJECT_PRODUCTION_URL`, `VERCEL_BRANCH_URL`) are added on top of that list. They do not replace the local origins.
 
 ### Claim mail
 
@@ -90,15 +90,16 @@ pnpm accept
 
 | Name | Purpose |
 | --- | --- |
-| `DATABASE_URL` | Postgres connection string |
+| `DATABASE_URL` | Postgres connection string. A `neon.tech` host uses the Neon serverless driver. On Vercel, use the pooled Neon URL |
 | `BETTER_AUTH_SECRET` | Session signing secret |
-| `BETTER_AUTH_URL` | Public origin, e.g. `http://127.0.0.1:3000` |
+| `BETTER_AUTH_URL` | Public origin, no path. Local: `http://127.0.0.1:3000`. Production: `https://<project>.vercel.app`. Preview deployments ignore this and use `https://$VERCEL_URL` |
+| `TRUSTED_ORIGINS` | Optional comma-separated extra browser origins for CORS and Better Auth |
 | `RELAY_MODE` | `mock` (default) or `http` |
 | `RELAY_INBOUND_ADDRESS` | Address printed in assignment mail |
 | `RELAY_HTTP_URL` | Used when `RELAY_MODE=http` |
-| `INBOUND_EMAIL_SECRET` | Shared secret for `x-inbound-secret`. Unset → `503` |
+| `INBOUND_EMAIL_SECRET` | Shared secret for `x-inbound-secret`. Unset → `503`. Not required to deploy |
 
-This repo is meant to deploy on Vercel Functions. Set the same env vars there and point `DATABASE_URL` at Neon. No production URL is claimed here.
+Deploy steps, including which Neon and Vercel dashboard controls to click, are in the root [README](../../README.md#deploy). This package does not claim a live URL. `RELAY_MODE` stays `mock` for that deploy.
 
 ## Recorded local run
 
