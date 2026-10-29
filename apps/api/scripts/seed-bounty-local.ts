@@ -18,6 +18,7 @@ const people = [
   { key: "BOT01", id: "b0000000-0000-4000-8000-000000000002", email: "bot01@mail.grokbot.com", name: "bot01", kind: "bot", wallet: "0xfea2B3ECf7287c6583DaE820B2a46F8Ef2F18ea2" },
   { key: "BOT02", id: "b0000000-0000-4000-8000-000000000003", email: "bot02@mail.grokbot.com", name: "bot02", kind: "bot", wallet: "0xfea2B3ECf7287c6583DaE820B2a46F8Ef2F18ea2" },
   { key: "NOWALLET", id: "b0000000-0000-4000-8000-000000000004", email: "bot03@mail.grokbot.com", name: "bot03", kind: "bot", wallet: null },
+  { key: "AJIE", id: "b0000000-0000-4000-8000-000000000005", email: "ajie@example.com", name: "阿杰", kind: "human", wallet: null },
 ] as const;
 
 async function main() {
@@ -25,6 +26,8 @@ async function main() {
   await db.connect();
   const lines: string[] = [];
   for (const p of people) {
+    // Local stand-in for Supabase auth.users (the profiles FK target).
+    await db.query("insert into auth.users (id) values ($1) on conflict do nothing", [p.id]);
     await db.query(
       `insert into profiles (id, email, name, display_name, kind, status, wallet_address)
        values ($1,$2,$3,$3,$4,$5,$6)

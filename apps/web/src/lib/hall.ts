@@ -2,7 +2,7 @@
  * Hall data access. Dev uses the mock store unless `VITE_USE_API=1`.
  * Production builds use the cookie session on same-origin `/api`.
  */
-import type { PublicTask, PublicUser } from '@idlebot/contract'
+import type { PublicLedgerEntry, PublicTask, PublicUser } from '@idlebot/contract'
 import { ApiClientError, remoteApi, useRemoteApi } from './apiClient'
 import * as mock from './store'
 import { BOT_COLORS, BOT_SHAPES, type Account, type BotShape, type Task } from './types'
@@ -57,6 +57,7 @@ export function accountFromUser(user: PublicUser): Account {
     shape: bot ? BOT_SHAPES[idx] : undefined,
     color: bot ? BOT_COLORS[idx] : undefined,
     createdAt: user.createdAt,
+    walletAddress: user.walletAddress,
   }
 }
 
@@ -72,6 +73,13 @@ function taskFromPublic(task: PublicTask): Task {
     createdAt: task.createdAt,
     claimedAt: task.claimedAt,
     completedAt: task.completedAt,
+    bounty: task.bounty,
+    rejectCount: task.rejectCount,
+    rejectReason: task.rejectReason,
+    submittedAt: task.submittedAt,
+    autoAcceptAt: task.autoAcceptAt,
+    cancelledAt: task.cancelledAt,
+    payoutStatus: task.payoutStatus,
   }
 }
 
@@ -144,6 +152,15 @@ const RULES: Array<[RegExp, string]> = [
   [/Task not found/i, '任务不存在'],
   [/Could not register/i, '注册失败'],
   [/Could not sign in/i, '登录失败'],
+  [/payout wallet address/i, '领取带赏金的任务前，请先填写收款钱包地址'],
+  [/walletAddress must be/i, '地址格式不对，应为 0x 开头的 42 位'],
+  [/bounty must be/i, '赏金范围 0.01–100 测试 USDC'],
+  [/insufficient_balance|exceeds balance/i, '钱包里的测试 USDC 不够'],
+  [/Only the publisher/i, '只有发布者可以操作'],
+  [/reject reason|reason is required/i, '请写驳回原因'],
+  [/Already rejected/i, '已驳回 2 次，只能通过'],
+  [/Only open tasks can be cancelled/i, '只有还没人领取的任务可以取消'],
+  [/not configured \(X402/i, '赏金支付还没配置好（服务端缺少平台钱包）'],
   [/Failed to fetch|NetworkError|Load failed/i, '无法连接 API。请先在 127.0.0.1:3000 启动 apps/api'],
 ]
 
@@ -205,17 +222,19 @@ async function remoteSnapshot(): Promise<HallSnapshot> {
     return { me: null, bots: [], openTasks: [], allTasks: [], myTasks: [], directory }
   }
   directory[me.id] = me
-  const [people, open, progress, done, mine] = await Promise.all([
+  const [people, open, progress, review, done, cancelled, mine] = await Promise.all([
     remoteApi.users(),
     remoteApi.tasks('open'),
     remoteApi.tasks('in_progress'),
+    remoteApi.tasks('pending_review'),
     remoteApi.tasks('completed'),
+    remoteApi.tasks('cancelled'),
     remoteApi.mine(),
   ])
   for (const person of people.items) directory[person.id] = accountFromUser(person)
   directory[me.id] = me
   const merged = new Map<string, Task>()
-  for (const item of [...open.items, ...progress.items, ...done.items, ...mine.items]) {
+  for (const item of [...open.items, ...progress.items, ...review.items, ...done.items, ...cancelled.items, ...mine.items]) {
     merged.set(item.id, taskFromPublic(item))
   }
   const allTasks = [...merged.values()].sort(byNewest)
@@ -320,16 +339,69 @@ export async function logoutAccount(): Promise<HallResult<null>> {
   }
 }
 
-export async function publish(title: string, body: string): Promise<HallResult<Task>> {
+export type PublishStage = 'requesting' | 'signing' | 'settling'
+
+/**
+ * Publish. A bounty runs the x402 flow: POST -> 402 -> wallet signs -> POST with PAYMENT-SIGNATURE.
+ * The task only exists (open) after the platform wallet has been paid.
+ */
+export async function publish(
+  title: string,
+  body: string,
+  bounty = '',
+  onStage?: (stage: PublishStage) => void,
+): Promise<HallResult<Task>> {
+  const amount = bounty.trim()
   if (!remoteMode) {
+    if (amount && Number(amount) !== 0) return { ok: false, error: '赏金需要连接 API（VITE_USE_API=1）' }
     const res = mock.publishTask(title, body)
     return res.ok ? { ok: true, data: res.task } : { ok: false, error: res.error }
   }
   if (!title.trim() || !body.trim()) return { ok: false, error: '请填写标题和简述' }
+  const req = { title: title.trim(), body: body.trim(), ...(amount ? { bounty: amount } : {}) }
   try {
-    return { ok: true, data: taskFromPublic(await remoteApi.createTask({ title: title.trim(), body: body.trim() })) }
+    onStage?.('requesting')
+    const first = await remoteApi.createTaskX402(req)
+    if (first.kind === 'created') return { ok: true, data: taskFromPublic(first.task) }
+    onStage?.('signing')
+    const { signPaymentHeader } = await import('./wallet')
+    const signed = await signPaymentHeader(first.header)
+    onStage?.('settling')
+    const second = await remoteApi.createTaskX402(req, signed.header)
+    if (second.kind === 'created') return { ok: true, data: taskFromPublic(second.task) }
+    return { ok: false, error: localize(second.message || second.error || '支付没有成功'), code: second.error }
   } catch (err) {
     return { ok: false, error: explain(err, '发布失败') }
+  }
+}
+
+async function taskCall(fn: () => Promise<PublicTask>, fallback: string): Promise<HallResult<Task>> {
+  try {
+    return { ok: true, data: taskFromPublic(await fn()) }
+  } catch (err) {
+    return { ok: false, error: explain(err, fallback), code: err instanceof ApiClientError ? err.code : undefined }
+  }
+}
+
+export const acceptTask = (id: string) => taskCall(() => remoteApi.accept(id), '验收失败')
+export const rejectTask = (id: string, reason: string) => taskCall(() => remoteApi.reject(id, reason), '驳回失败')
+export const cancelTask = (id: string) => taskCall(() => remoteApi.cancel(id), '取消失败')
+
+export async function loadReceipt(id: string): Promise<HallResult<PublicLedgerEntry[]>> {
+  try {
+    return { ok: true, data: (await remoteApi.receipt(id)).items }
+  } catch (err) {
+    return { ok: false, error: explain(err, '读取收据失败') }
+  }
+}
+
+export async function saveWallet(address: string): Promise<HallResult<Account>> {
+  try {
+    const account = accountFromUser(await remoteApi.updateWallet(address.trim() || null))
+    remember(account)
+    return { ok: true, data: account }
+  } catch (err) {
+    return { ok: false, error: explain(err, '保存失败') }
   }
 }
 
@@ -354,7 +426,11 @@ export async function claim(taskId: string): Promise<HallResult<{ task: Task; au
   try {
     claimed = taskFromPublic(await remoteApi.claim(taskId))
   } catch (err) {
-    return { ok: false, error: explain(err, '接取失败') }
+    return {
+      ok: false,
+      error: explain(err, '接取失败'),
+      code: err instanceof ApiClientError ? err.code : undefined,
+    }
   }
 
   let me: Account

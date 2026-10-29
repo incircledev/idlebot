@@ -18,6 +18,7 @@ import {
   type MyTasksResponse,
   type PublicTask,
   type PublicUser,
+  type ReceiptResponse,
   type RegisterRequest,
   type RegisterResponse,
   type RelayLogListResponse,
@@ -72,6 +73,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   } catch {
     throw new ApiClientError(res.status, null, '响应不是 JSON')
   }
+}
+
+/** Bounty publish: 201 with the task, or 402 with the base64 PAYMENT-REQUIRED header (x402 v2). */
+export type CreateTaskOutcome =
+  | { kind: 'created'; task: PublicTask }
+  | { kind: 'payment_required'; header: string; error?: string; message?: string }
+
+async function createTaskX402(body: CreateTaskRequest, paymentSignature?: string): Promise<CreateTaskOutcome> {
+  const headers = new Headers({ 'content-type': 'application/json' })
+  if (paymentSignature) headers.set('PAYMENT-SIGNATURE', paymentSignature)
+  const res = await fetch('/api/tasks', { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) })
+  const header = res.headers.get('payment-required')
+  if (res.status === 402 && header) {
+    const json = (await res.json().catch(() => ({}))) as { error?: string; message?: string }
+    return { kind: 'payment_required', header, error: json.error, message: json.message }
+  }
+  if (!res.ok) {
+    const json = (await res.json().catch(() => null)) as ApiErrorBody | null
+    throw new ApiClientError(res.status, json, res.statusText || ERROR_CODES.INTERNAL)
+  }
+  return { kind: 'created', task: (await res.json()) as PublicTask }
 }
 
 export type SignOutResponse = {
@@ -129,6 +151,22 @@ export const remoteApi = {
     request<PublicUser>('/api/me/status', {
       method: 'PATCH',
       body: JSON.stringify({ status } satisfies UpdateBotStatusRequest),
+    }),
+  createTaskX402,
+  accept: (id: string) =>
+    request<PublicTask>(`/api/tasks/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
+  reject: (id: string, reason: string) =>
+    request<PublicTask>(`/api/tasks/${encodeURIComponent(id)}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+  cancel: (id: string) =>
+    request<PublicTask>(`/api/tasks/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  receipt: (id: string) => request<ReceiptResponse>(`/api/tasks/${encodeURIComponent(id)}/receipt`),
+  updateWallet: (walletAddress: string | null) =>
+    request<PublicUser>('/api/me', {
+      method: 'PATCH',
+      body: JSON.stringify({ walletAddress }),
     }),
   relayLogs: (taskId: string) =>
     request<RelayLogListResponse>(`/api/relay/logs?taskId=${encodeURIComponent(taskId)}`),

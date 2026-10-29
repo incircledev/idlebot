@@ -8,7 +8,7 @@ set -a
 # shellcheck disable=SC1090
 source <(grep -E '^(SUPABASE_[A-Z_]*|X402_[A-Z_]*)=' "$ENV_FILE")
 set +a
-export DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55432/postgres
+export DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:${LOCAL_PG_PORT:-55432}/postgres
 export X402_MOCK=${X402_MOCK:-1}
 export BOUNTY_REVIEW_TIMEOUT_SEC=${BOUNTY_REVIEW_TIMEOUT_SEC:-60}
 cd "$(dirname "$0")/.."
