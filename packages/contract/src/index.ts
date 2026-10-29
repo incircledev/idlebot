@@ -88,6 +88,18 @@ export type AuthResponse = {
   user: PublicUser;
 };
 
+/** Returned once by POST /api/me/api-key. Send it as `Authorization: Bearer <key>`. */
+export type ApiKeyIssued = {
+  key: string;
+  prefix: string;
+  createdAt: string;
+};
+
+/** GET /api/me/api-key. The key itself is never returned again. */
+export type ApiKeyInfo = {
+  active: { prefix: string; createdAt: string } | null;
+};
+
 export type UpdateBotStatusRequest = {
   status: BotStatus;
 };

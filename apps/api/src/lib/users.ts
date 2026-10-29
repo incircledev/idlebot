@@ -7,6 +7,7 @@ import { HttpError } from "@/lib/http";
 import type { PublicUser, UserKind } from "@idlebot/contract";
 import { classifyEmail, parseBotStatus } from "@/lib/market-rules";
 import { cookieSupabase, plainSupabase } from "@/lib/supabase";
+import { looksLikeApiKey, userForApiKey } from "@/lib/api-keys";
 
 export type { PublicUser };
 
@@ -55,10 +56,8 @@ export async function ensureProfile(id: string, rawEmail: string, displayName?: 
   return raced;
 }
 
-/** Verified Supabase identity from `Authorization: Bearer` or the session cookies. */
-async function currentIdentity() {
-  const auth = (await headers()).get("authorization");
-  const bearer = auth?.match(/^Bearer\s+(.+)$/i)?.[1];
+/** Verified Supabase identity from a Bearer access token or the session cookies. */
+async function currentIdentity(bearer: string | undefined) {
   const { data, error } = bearer
     ? await plainSupabase().auth.getClaims(bearer)
     : await (await cookieSupabase()).auth.getClaims();
@@ -73,7 +72,10 @@ async function currentIdentity() {
 
 export async function requireUser() {
   await connection();
-  const identity = await currentIdentity();
+  const auth = (await headers()).get("authorization");
+  const bearer = auth?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  if (bearer && looksLikeApiKey(bearer)) return userForApiKey(bearer);
+  const identity = await currentIdentity(bearer);
   if (!identity) return null;
   return ensureProfile(identity.id, identity.email, identity.displayName);
 }

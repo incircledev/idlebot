@@ -5,6 +5,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -81,6 +82,24 @@ export const relayLog = pgTable(
       sql`${table.direction} in ('outbound', 'inbound')`,
     ),
     index("relay_log_task_idx").on(table.taskId),
+  ],
+);
+
+/** Bot API key. Only the SHA-256 hash is stored; the key is shown once at issue time. */
+export const apiKey = pgTable(
+  "api_key",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    keyHash: text("key_hash").notNull().unique(),
+    prefix: text("prefix").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("api_key_one_live_idx").on(table.userId).where(sql`${table.revokedAt} is null`),
   ],
 );
 
