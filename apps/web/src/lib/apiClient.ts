@@ -23,6 +23,7 @@ import {
   type TaskListResponse,
   type TaskStatus,
   type UpdateBotStatusRequest,
+  type UserListResponse,
 } from '@idlebot/contract'
 
 export const useRemoteApi =
@@ -79,6 +80,7 @@ export type SignOutResponse = {
 export const remoteApi = {
   enabled: useRemoteApi,
   me: () => request<PublicUser>('/api/me'),
+  users: () => request<UserListResponse>('/api/users'),
   register: (body: RegisterRequest) =>
     request<AuthResponse>('/api/auth/register', {
       method: 'POST',

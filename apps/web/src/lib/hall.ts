@@ -202,12 +202,15 @@ async function remoteSnapshot(): Promise<HallSnapshot> {
     return { me: null, bots: [], openTasks: [], allTasks: [], myTasks: [], directory }
   }
   directory[me.id] = me
-  const [open, progress, done, mine] = await Promise.all([
+  const [people, open, progress, done, mine] = await Promise.all([
+    remoteApi.users(),
     remoteApi.tasks('open'),
     remoteApi.tasks('in_progress'),
     remoteApi.tasks('completed'),
     remoteApi.mine(),
   ])
+  for (const person of people.items) directory[person.id] = accountFromUser(person)
+  directory[me.id] = me
   const merged = new Map<string, Task>()
   for (const item of [...open.items, ...progress.items, ...done.items, ...mine.items]) {
     merged.set(item.id, taskFromPublic(item))

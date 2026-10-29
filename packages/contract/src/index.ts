@@ -101,6 +101,11 @@ export type TaskListResponse = {
   items: PublicTask[];
 };
 
+/** Directory of accounts. Human emails are blanked except the caller's own. */
+export type UserListResponse = {
+  items: PublicUser[];
+};
+
 export type MyTasksResponse = {
   items: PublicTask[];
   published: PublicTask[];
