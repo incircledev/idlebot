@@ -126,8 +126,16 @@ export async function claimTask(claimer: UserRow, id: string) {
   return toPublicTask(claimed);
 }
 
-export async function completeTask(id: string, resultRaw: unknown) {
+/** `actorId` set means a user call: once claimed, only the assignee may complete it. Relay paths omit it. */
+export async function completeTask(id: string, resultRaw: unknown, actorId?: string) {
   requireUuid(id);
+  if (actorId) {
+    const current = await findTask(id);
+    if (!current) throw new HttpError(404, "Task not found");
+    if (current.assigneeId && current.assigneeId !== actorId) {
+      throw new HttpError(403, "Only the assignee can complete this task");
+    }
+  }
   const trimmed = typeof resultRaw === "string" ? resultRaw.trim() : "";
   if (trimmed.length > 20000) throw new HttpError(400, "result is too long");
 

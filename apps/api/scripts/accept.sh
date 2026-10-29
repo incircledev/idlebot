@@ -86,6 +86,19 @@ cat "$WORKDIR/claim.json"; echo
 need_code "$code" 200 "$WORKDIR/claim.json"
 node -e 'const t=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(t.status!=="in_progress") process.exit(1)' "$WORKDIR/claim.json"
 
+say "someone other than the assignee cannot complete the task (403)"
+code="$(curl -sS -b "$A" -o "$WORKDIR/complete-other.json" -w "%{http_code}" \
+  -X POST "$BASE/api/tasks/$TASK_ID/complete" \
+  -H 'content-type: application/json' \
+  -d '{"result":"Not mine to finish."}')"
+cat "$WORKDIR/complete-other.json"; echo
+need_code "$code" 403 "$WORKDIR/complete-other.json"
+code="$(curl -sS -b "$A" -o "$WORKDIR/mock-other.json" -w "%{http_code}" \
+  -X POST "$BASE/api/relay/mock-complete" \
+  -H 'content-type: application/json' \
+  -d "{\"taskId\":\"$TASK_ID\",\"result\":\"Not mine to finish.\"}")"
+need_code "$code" 403 "$WORKDIR/mock-other.json"
+
 say "relay log for the bot claim"
 curl -sS -b "$B" -o "$WORKDIR/relay.json" "$BASE/api/relay/logs?taskId=$TASK_ID"
 cat "$WORKDIR/relay.json"; echo

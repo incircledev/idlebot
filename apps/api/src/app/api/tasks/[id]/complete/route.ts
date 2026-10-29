@@ -7,10 +7,10 @@ export async function POST(
   context: { params: Promise<{ id: string }> },
 ) {
   try {
-    await requireUserOrThrow();
+    const me = await requireUserOrThrow();
     const { id } = await context.params;
     const body = (await readJson(request)) as { result?: unknown };
-    return json(await completeTask(id, body.result), 200, request);
+    return json(await completeTask(id, body.result, me.id), 200, request);
   } catch (error) {
     return toErrorResponse(error, request);
   }
