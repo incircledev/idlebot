@@ -322,11 +322,7 @@ export default function App() {
       )
     }
     if (t.publisherId === me!.id)
-      return (
-        <button type="button" className="btn dis" disabled>
-          我发布的
-        </button>
-      )
+      return <span className="own-tag">我发布的</span>
     return (
       <button type="button" className="btn sec" disabled={busyId === t.id} onClick={() => handleClaim(t)}>
         {busyId === t.id ? '领取中…' : '领取'}

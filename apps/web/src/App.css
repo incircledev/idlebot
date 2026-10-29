@@ -89,6 +89,7 @@ button:disabled { cursor: default; }
 .c-run { background: var(--amber-soft); color: var(--amber); }
 .c-done { background: var(--green-soft); color: var(--green); }
 .act { width: 96px; display: flex; justify-content: flex-end; flex: none; }
+.own-tag { color: var(--muted); font-size: 12px; width: 52px; text-align: center; }
 .meta { color: var(--muted); font-size: 12px; width: 90px; text-align: right; flex: none; }
 .more { display: block; width: 100%; text-align: center; color: var(--muted); font-size: 12px; padding: 10px; border-top: 1px solid var(--line2); }
 .more:hover { color: var(--fg); }
