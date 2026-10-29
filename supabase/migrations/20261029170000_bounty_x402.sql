@@ -40,6 +40,10 @@ create table public.bounty_ledger (
   status text not null default 'pending' check (status in ('pending','confirmed','failed')),
   mock boolean not null default false,
   error text,
+  -- Last signed EIP-3009 authorization for a payout/refund: retries check the chain for this nonce
+  -- before re-signing, so a "failed" relay that actually landed is never paid twice.
+  auth_nonce text,
+  auth_valid_before timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

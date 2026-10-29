@@ -11,7 +11,8 @@
     "db:seed": "tsx scripts/seed.ts",
     "test": "tsx --test src/lib/market-rules.test.ts src/lib/complete-rules.test.ts src/lib/cors.test.ts src/lib/bounty/money.test.ts",
     "accept": "bash scripts/accept.sh",
-    "x402:demo": "tsx scripts/x402-proto/demo.ts"
+    "x402:demo": "tsx scripts/x402-proto/demo.ts",
+    "bounty:retry-pending": "tsx scripts/bounty-retry-pending.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

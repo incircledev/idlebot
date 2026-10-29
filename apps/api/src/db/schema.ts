@@ -132,6 +132,10 @@ export const bountyLedger = pgTable(
     status: text("status").notNull().default("pending"),
     mock: boolean("mock").notNull().default(false),
     error: text("error"),
+    /** EIP-3009 nonce of the last signed platform authorization (payout/refund). Lets a retry check the chain first. */
+    authNonce: text("auth_nonce"),
+    /** After this the signed authorization can no longer land, so re-signing is safe. */
+    authValidBefore: timestamp("auth_valid_before", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

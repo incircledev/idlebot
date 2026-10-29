@@ -6,11 +6,21 @@ import {
   type PublicTask,
   type TaskStatus,
 } from "@idlebot/contract";
-import { and, asc, desc, eq, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, ne, or } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { bountyLedger, relayLog, task, type LedgerRow, type TaskRow, type UserRow } from "@/db/schema";
 import { autoAcceptAt, decideReject, formatUsdc, parseBounty, reviewWindowSeconds } from "@/lib/bounty/money";
-import { chargeBounty, explorerTx, platformAddress, sendFromPlatform, type PaymentOutcome } from "@/lib/bounty/x402";
+import {
+  chargeBounty,
+  explorerTx,
+  findLandedTransfer,
+  isMockMode,
+  platformAddress,
+  relayPlatformTransfer,
+  signPlatformTransfer,
+  waitForIncomingFunds,
+  type PaymentOutcome,
+} from "@/lib/bounty/x402";
 import { decideCompletion } from "@/lib/complete-rules";
 import { HttpError } from "@/lib/http";
 import { isUuid, parseTaskStatus } from "@/lib/market-rules";
@@ -295,7 +305,9 @@ export async function acceptTask(actor: UserRow | null, id: string) {
   if (actor && existing.publisherId !== actor.id) throw new HttpError(403, "Only the publisher can accept");
   if (existing.status === "completed" && existing.bountyAmount > 0) {
     // Lost the race or a repeat click: never a second transfer. A failed payout may be retried.
-    if (existing.payoutStatus === "failed") return toPublicTask(await payout(existing, true));
+    if (existing.payoutStatus === "failed" || existing.payoutStatus === "pending") {
+      return toPublicTask(await payout(existing, true));
+    }
     return toPublicTask(existing);
   }
   throw new HttpError(409, `Illegal status transition from ${existing.status} to completed`, existing.status);
@@ -350,18 +362,23 @@ export async function cancelTask(actor: UserRow, id: string) {
 /**
  * Move money out of the platform wallet once per (task, kind). The unique ledger index is the
  * lock: whoever inserts the pending row sends; everyone else returns the current task.
- * `retry` re-claims a failed row with a CAS failed -> pending.
+ * `retry` re-claims an existing failed (or stale pending) row through `reclaimLedger`.
  */
 async function settleOut(row: TaskRow, kind: "payout" | "refund", to: string | null, retry = false): Promise<TaskRow> {
   const db = getDb();
   let claimed: LedgerRow | undefined;
   if (retry) {
-    [claimed] = await db
-      .update(bountyLedger)
-      .set({ status: "pending", error: null, updatedAt: new Date() })
-      .where(and(eq(bountyLedger.taskId, row.id), eq(bountyLedger.kind, kind), eq(bountyLedger.status, "failed")))
-      .returning();
-  } else {
+    const [existing] = await db
+      .select()
+      .from(bountyLedger)
+      .where(and(eq(bountyLedger.taskId, row.id), eq(bountyLedger.kind, kind)));
+    if (existing) {
+      const outcome = await reclaimLedger(existing, RETRY_STALE_MS_ON_CLICK);
+      if (outcome !== "claimed") return (await findTask(row.id)) ?? row;
+      claimed = existing;
+    }
+  }
+  if (!claimed) {
     [claimed] = await db
       .insert(bountyLedger)
       .values({ taskId: row.id, kind, amount: row.bountyAmount, toAddress: to, status: "pending" })
@@ -369,35 +386,143 @@ async function settleOut(row: TaskRow, kind: "payout" | "refund", to: string | n
       .returning();
   }
   if (!claimed) return (await findTask(row.id)) ?? row;
+  return deliver(row, claimed.id, kind, to);
+}
 
-  const done = kind === "payout" ? "paid" : "refunded";
+/** Owner of a pending ledger row: wait for the incoming money, sign, persist the nonce, relay. */
+async function deliver(row: TaskRow, ledgerId: string, kind: "payout" | "refund", to: string | null): Promise<TaskRow> {
+  const db = getDb();
+  const tag = `[bounty] ${kind} ${row.id}`;
   try {
     if (!to) throw new Error(kind === "payout" ? "assignee has no payout address" : "payer address unknown");
-    const sent = await sendFromPlatform(to, row.bountyAmount, `${kind}/${row.id}`);
+    const [incoming] = await db
+      .select()
+      .from(bountyLedger)
+      .where(and(eq(bountyLedger.taskId, row.id), eq(bountyLedger.kind, "payment")));
+    await waitForIncomingFunds(incoming && !incoming.mock ? incoming.txHash : null, row.bountyAmount);
+    const signed = await signPlatformTransfer(to, row.bountyAmount, `${kind}/${row.id}`);
     await db
       .update(bountyLedger)
-      .set({ status: "confirmed", txHash: sent.txHash, fromAddress: sent.from, mock: sent.mock, updatedAt: new Date() })
-      .where(eq(bountyLedger.id, claimed.id));
-    const [updated] = await db
-      .update(task)
-      .set({ payoutStatus: done, updatedAt: new Date() })
-      .where(eq(task.id, row.id))
-      .returning();
-    return updated ?? row;
+      .set({ authNonce: signed.nonce, authValidBefore: signed.validBefore, updatedAt: new Date() })
+      .where(eq(bountyLedger.id, ledgerId));
+    const sent = await relayPlatformTransfer(signed, (msg) => console.warn(`${tag} ${msg}`));
+    return await markSent(row.id, ledgerId, kind, sent.txHash, sent.from, sent.mock);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[bounty] ${kind} for ${row.id} failed: ${message}`);
+    console.error(`${tag} failed: ${message}`);
     await db
       .update(bountyLedger)
       .set({ status: "failed", error: message.slice(0, 500), updatedAt: new Date() })
-      .where(eq(bountyLedger.id, claimed.id));
+      .where(and(eq(bountyLedger.id, ledgerId), eq(bountyLedger.status, "pending")));
     const [updated] = await db
       .update(task)
       .set({ payoutStatus: "failed", updatedAt: new Date() })
-      .where(eq(task.id, row.id))
+      .where(and(eq(task.id, row.id), ne(task.payoutStatus, kind === "payout" ? "paid" : "refunded")))
       .returning();
-    return updated ?? row;
+    return updated ?? (await findTask(row.id)) ?? row;
   }
+}
+
+async function markSent(taskId: string, ledgerId: string, kind: "payout" | "refund", txHash: string | null, from: string, mock: boolean) {
+  const db = getDb();
+  await db
+    .update(bountyLedger)
+    .set({
+      status: "confirmed",
+      txHash,
+      fromAddress: from,
+      mock,
+      error: txHash ? null : "landed on chain; tx hash not found in the lookback window",
+      updatedAt: new Date(),
+    })
+    .where(eq(bountyLedger.id, ledgerId));
+  const [updated] = await db
+    .update(task)
+    .set({ payoutStatus: kind === "payout" ? "paid" : "refunded", updatedAt: new Date() })
+    .where(eq(task.id, taskId))
+    .returning();
+  if (!updated) throw new Error(`task ${taskId} vanished after ${kind}`);
+  return updated;
+}
+
+/** A click on accept/cancel may retry a failed row at once, but only takes over a pending row this old. */
+const RETRY_STALE_MS_ON_CLICK = 10 * 60_000;
+
+/**
+ * Take over a failed or stuck pending payout/refund row. Never pays twice:
+ *  1. If the last signed nonce landed on chain, record that tx and stop ("landed").
+ *  2. If that authorization could still land (validBefore in the future), leave it ("busy").
+ *  3. A pending row younger than `staleMs` may still be in flight in another request ("busy").
+ *  4. Otherwise CAS the row back to a fresh pending (status + nonce must be unchanged) ("claimed").
+ *     Losing that CAS means another retrier got it ("busy").
+ */
+async function reclaimLedger(ledger: LedgerRow, staleMs: number): Promise<"claimed" | "landed" | "busy" | "done"> {
+  const db = getDb();
+  if (ledger.kind !== "payout" && ledger.kind !== "refund") return "done";
+  if (ledger.status === "confirmed") return "done";
+  if (ledger.authNonce) {
+    const landed = await findLandedTransfer(ledger.authNonce);
+    if (landed.landed) {
+      const [won] = await db
+        .update(bountyLedger)
+        .set({ status: "pending", updatedAt: new Date() })
+        .where(and(eq(bountyLedger.id, ledger.id), eq(bountyLedger.status, ledger.status), eq(bountyLedger.authNonce, ledger.authNonce)))
+        .returning();
+      if (won) await markSent(ledger.taskId, ledger.id, ledger.kind, landed.txHash, platformAddress(), isMockMode());
+      return "landed";
+    }
+    if (ledger.authValidBefore && ledger.authValidBefore.getTime() > Date.now()) return "busy";
+  }
+  const cutoff = new Date(Date.now() - staleMs);
+  const [claimed] = await db
+    .update(bountyLedger)
+    .set({ status: "pending", error: null, authNonce: null, authValidBefore: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(bountyLedger.id, ledger.id),
+        ledger.authNonce ? eq(bountyLedger.authNonce, ledger.authNonce) : isNull(bountyLedger.authNonce),
+        ledger.status === "failed"
+          ? eq(bountyLedger.status, "failed")
+          : and(eq(bountyLedger.status, "pending"), lt(bountyLedger.updatedAt, cutoff)),
+      ),
+    )
+    .returning();
+  if (!claimed) return "busy";
+  await db.update(task).set({ payoutStatus: "pending", updatedAt: new Date() }).where(eq(task.id, ledger.taskId));
+  return "claimed";
+}
+
+/**
+ * `pnpm bounty:retry-pending`: finish payouts/refunds left failed, or pending by a crash.
+ * Pending rows are only touched after `staleSec` (default 10 min, longer than the 5 min an
+ * authorization stays valid plus the funding wait). Idempotent: the (task_id, kind) unique index
+ * keeps one row per movement, and `reclaimLedger` checks the chain before any re-send.
+ */
+export async function retryPendingSettlements(opts: { staleSec?: number; limit?: number } = {}) {
+  const staleMs = (opts.staleSec ?? 600) * 1000;
+  const db = getDb();
+  const rows = await db
+    .select()
+    .from(bountyLedger)
+    .where(and(inArray(bountyLedger.kind, ["payout", "refund"]), inArray(bountyLedger.status, ["pending", "failed"])))
+    .orderBy(asc(bountyLedger.createdAt))
+    .limit(opts.limit ?? 50);
+  const results: { taskId: string; kind: string; outcome: string; txHash?: string | null; error?: string | null }[] = [];
+  for (const ledger of rows) {
+    const outcome = await reclaimLedger(ledger, staleMs);
+    if (outcome !== "claimed") {
+      results.push({ taskId: ledger.taskId, kind: ledger.kind, outcome });
+      continue;
+    }
+    const row = await findTask(ledger.taskId);
+    const kind = ledger.kind as "payout" | "refund";
+    const to = row ? (kind === "payout" ? row.payoutAddress : row.payerAddress) : null;
+    if (!row) continue;
+    await deliver(row, ledger.id, kind, to);
+    const [after] = await db.select().from(bountyLedger).where(eq(bountyLedger.id, ledger.id));
+    results.push({ taskId: ledger.taskId, kind, outcome: after?.status ?? "unknown", txHash: after?.txHash, error: after?.error });
+  }
+  return results;
 }
 
 function payout(row: TaskRow, retry = false) {
@@ -406,7 +531,7 @@ function payout(row: TaskRow, retry = false) {
 }
 
 function refund(row: TaskRow) {
-  return settleOut(row, "refund", row.payerAddress, row.payoutStatus === "failed");
+  return settleOut(row, "refund", row.payerAddress, row.payoutStatus === "failed" || row.payoutStatus === "pending");
 }
 
 const SWEEP_EVERY_MS = 5_000;
