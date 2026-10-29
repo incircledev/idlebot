@@ -298,15 +298,9 @@ export function ProfileDialog(props: {
   )
 }
 
-/** e1 — confirmation mail sent; resend has a 60 s cooldown. */
-export function ConfirmSent(props: { email: string; onResend: () => Promise<void>; onChangeEmail: () => void }) {
-  const { email, onResend, onChangeEmail } = props
-  const [left, setLeft] = useState(60)
-  useEffect(() => {
-    if (left <= 0) return
-    const id = setTimeout(() => setLeft((s) => s - 1), 1000)
-    return () => clearTimeout(id)
-  }, [left])
+/** e1 — confirmation mail sent; resend has a 60 s cooldown (`left`, owned by App). */
+export function ConfirmSent(props: { email: string; left: number; onResend: () => Promise<void>; onChangeEmail: () => void }) {
+  const { email, left, onResend, onChangeEmail } = props
   return (
     <div className="auth sent">
       <div className="sent-ic">✉</div>
@@ -318,10 +312,7 @@ export function ConfirmSent(props: { email: string; onResend: () => Promise<void
         type="button"
         className="btn sec block"
         disabled={left > 0}
-        onClick={async () => {
-          await onResend()
-          setLeft(60)
-        }}
+        onClick={() => void onResend()}
       >
         {left > 0 ? `重新发送（${left} 秒）` : '重新发送'}
       </button>

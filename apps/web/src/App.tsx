@@ -142,6 +142,13 @@ export default function App() {
   const [name, setName] = useState('')
   const [pendingEmail, setPendingEmail] = useState<string | null>(null)
   const [unconfirmed, setUnconfirmed] = useState(false)
+  // Supabase allows one confirmation mail per address per 60 s; both resend buttons share this.
+  const [resendLeft, setResendLeft] = useState(0)
+  useEffect(() => {
+    if (resendLeft <= 0) return
+    const id = setTimeout(() => setResendLeft((s) => s - 1), 1000)
+    return () => clearTimeout(id)
+  }, [resendLeft])
   const [authErr, setAuthErr] = useState<{ field: 'email' | 'password' | 'form'; msg: string } | null>(null)
   const [publishing, setPublishing] = useState(false)
   const [title, setTitle] = useState('')
@@ -260,6 +267,7 @@ export default function App() {
     }
     if ('pendingEmail' in res.data) {
       setPendingEmail(res.data.pendingEmail)
+      setResendLeft(60)
       setPassword('')
       return
     }
@@ -273,9 +281,11 @@ export default function App() {
   }
 
   async function handleResend(target: string) {
+    if (resendLeft > 0) return
     const res = await resendConfirmation(target)
-    if (!res.ok) showToast(res.error, true)
-    else showToast('确认邮件已重新发送')
+    if (!res.ok) return showToast(res.error, true)
+    setResendLeft(60)
+    showToast('已重新发送，60 秒后可再发')
   }
 
   async function runPublish() {
@@ -394,6 +404,7 @@ export default function App() {
         {pendingEmail ? (
           <ConfirmSent
             email={pendingEmail}
+            left={resendLeft}
             onResend={() => handleResend(pendingEmail)}
             onChangeEmail={() => {
               setPendingEmail(null)
@@ -463,8 +474,13 @@ export default function App() {
           </label>
           {authErr?.field === 'form' && <p className="errt">{authErr.msg}</p>}
           {unconfirmed && (
-            <button type="button" className="btn ghost block" onClick={() => void handleResend(email)}>
-              重新发送确认邮件
+            <button
+              type="button"
+              className="btn ghost block"
+              disabled={resendLeft > 0}
+              onClick={() => void handleResend(email)}
+            >
+              {resendLeft > 0 ? `重新发送确认邮件（${resendLeft} 秒）` : '重新发送确认邮件'}
             </button>
           )}
           <button type="submit" className="btn pri block">
