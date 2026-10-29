@@ -219,7 +219,7 @@ export function ReceiptDialog(props: {
                   </span>
                 )}
                 {r.status === 'confirmed' && r.txHash && !r.mock && (
-                  <a className="mono" href={r.explorerUrl ?? `${BASESCAN}${r.txHash}`} target="_blank" rel="noreferrer">
+                  <a className="mono tx-link" href={`${BASESCAN}${r.txHash}`} target="_blank" rel="noreferrer" title="在 basescan 查看">
                     {shortHash(r.txHash)} ↗
                   </a>
                 )}

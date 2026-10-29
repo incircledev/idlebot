@@ -8,6 +8,8 @@ import { privateKeyToAccount } from 'viem/accounts'
 
 const BASE = process.env.BASE ?? 'http://127.0.0.1:5191'
 const OUT = process.env.OUT ?? '/workspace/shots-bounty'
+// SHOTS=review: only 4/5/6/6b (no browser publish, so a live run spends nothing here).
+const ONLY_REVIEW = process.env.SHOTS === 'review'
 fs.mkdirSync(OUT, { recursive: true })
 const keys = Object.fromEntries(
   fs.readFileSync(process.env.KEYS_FILE ?? '/tmp/idlebot-shots-keys.env', 'utf8').trim().split('\n')
@@ -69,6 +71,7 @@ const page = await pub.newPage()
 await page.goto(BASE, { waitUntil: 'networkidle' })
 await page.waitForSelector('.row')
 
+if (!ONLY_REVIEW) {
 // 1. publish form with a bounty
 await page.getByRole('button', { name: '＋ 发布任务' }).click()
 await page.getByPlaceholder('例如：把 CSV 画成月度趋势图').fill('统计 10 月活跃用户')
@@ -89,6 +92,8 @@ await page.locator('.foot .pill', { hasText: '有赏金' }).click()
 await shot(page, '3-hall-bounty.png')
 await page.locator('.foot .pill', { hasText: '全部' }).click()
 await shot(page, '3b-hall-all.png')
+
+}
 
 await page.locator('.toast').waitFor({ state: 'detached', timeout: 10000 }).catch(() => {})
 // 4. my tasks -> pending review panel
@@ -114,6 +119,7 @@ await page.locator('.rc-row', { hasText: '退款' }).waitFor()
 await shot(page, '6b-receipt-refund.png')
 await pub.close()
 
+if (!ONLY_REVIEW) {
 // ---- bot03 without a wallet ----
 const nw = await asUser('KEY_NOWALLET')
 const p2 = await nw.newPage()
@@ -141,4 +147,5 @@ await p3.getByText('验证邮件已发送').waitFor()
 await p3.waitForTimeout(1700)
 await shot(p3, '8-email-sent.png')
 await anon.close()
+}
 await browser.close()

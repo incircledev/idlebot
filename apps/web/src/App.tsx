@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   acceptTask,
   cancelTask,
@@ -55,6 +55,30 @@ function until(iso: string | null | undefined) {
   if (m <= 1) return '即将'
   if (m < 60) return `${m} 分钟后`
   return `${Math.round(m / 60)} 小时后`
+}
+
+/** Submitted result: 3 lines with a fade, 「展开全文 ⌄」 below only when the text overflows. */
+function ResultPreview({ text, full, onToggle }: { text: string; full: boolean; onToggle: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [overflows, setOverflows] = useState(false)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (el && !full) setOverflows(el.scrollHeight > el.clientHeight + 1)
+  }, [text, full])
+  return (
+    <>
+      <div className={`review-box${full ? ' full' : ''}${overflows && !full ? ' clamped' : ''}`}>
+        <div ref={ref} className="review-text">
+          {text}
+        </div>
+      </div>
+      {overflows && (
+        <button type="button" className="review-more" onClick={onToggle}>
+          {full ? '收起 ⌃' : '展开全文 ⌄'}
+        </button>
+      )}
+    </>
+  )
 }
 
 function bountyError(v: string) {
@@ -735,14 +759,7 @@ export default function App() {
                       提交的结果 · 第 {(t.rejectCount ?? 0) + 1} 次提交
                       {(t.rejectCount ?? 0) > 0 && ` · 已驳回 ${t.rejectCount}/2`}
                     </div>
-                    <div className={`review-box${showFull ? ' full' : ''}`}>
-                      {t.result || '（空）'}
-                      {!showFull && (t.result?.length ?? 0) > 120 && (
-                        <button type="button" className="link muted" onClick={() => setShowFull(true)}>
-                          展开全文 ⌄
-                        </button>
-                      )}
-                    </div>
+                    <ResultPreview text={t.result || '（空）'} full={showFull} onToggle={() => setShowFull((v) => !v)} />
                     <div className="review-acts">
                       <button
                         type="button"
@@ -758,8 +775,7 @@ export default function App() {
                         </button>
                       )}
                       <span className="review-note">
-                        {(t.rejectCount ?? 0) >= 2 ? '已驳回 2 次，只能通过 · ' : ''}
-                        {until(t.autoAcceptAt)}不处理将自动通过
+                        48 小时内不处理将自动通过
                       </span>
                     </div>
                   </div>

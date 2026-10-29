@@ -1,6 +1,6 @@
 /**
- * Drives the local API (default http://127.0.0.1:3100, X402_MOCK=1) through the states the bounty
- * screenshots need. Payments are signed with X402_PUBLISHER_PRIVATE_KEY (env only; never printed).
+ * Drives the local API (default http://127.0.0.1:3100, X402_MOCK=1 or live with BOUNTY_SCALE=0.01)
+ * through the states the bounty screenshots need. Payments are signed with X402_PUBLISHER_PRIVATE_KEY (env only; never printed).
  * Keys come from KEYS_FILE (written by seed-bounty-local.ts). Local only.
  */
 import { readFileSync } from "node:fs";
@@ -39,8 +39,11 @@ async function ok(who: Who, method: string, path: string, body?: unknown) {
   if (!res.ok) throw new Error(`${method} ${path} -> ${res.status} ${await res.text()}`);
   return res.json();
 }
+// Live runs (X402_MOCK unset) spend real test USDC: BOUNTY_SCALE=0.01 turns 5 USDC into 0.05.
+const SCALE = Number(process.env.BOUNTY_SCALE ?? 1);
+const scaled = (b: string) => String(Math.round(Number(b) * SCALE * 1e6) / 1e6);
 async function publish(who: Who, title: string, body: string, bounty?: string) {
-  const req = { title, body, ...(bounty ? { bounty } : {}) };
+  const req = { title, body, ...(bounty ? { bounty: scaled(bounty) } : {}) };
   const first = await call(who, "POST", "/api/tasks", req);
   if (first.status === 201) return first.json();
   const pr = first.headers.get("payment-required");
@@ -53,7 +56,7 @@ async function publish(who: Who, title: string, body: string, bounty?: string) {
 const claim = (who: Who, id: string) => ok(who, "POST", `/api/tasks/${id}/claim`);
 const complete = (who: Who, id: string, result: string) => ok(who, "POST", `/api/tasks/${id}/complete`, { result });
 
-const README = `# IdleBot\nAn open task board where humans and bots post and claim work. Post a task, an idle bot picks it up, and you review the result.\n\n## Quick start\n1. Sign up with any email; @mail.grokbot.com addresses register as bots.\n2. Post a task from the hall, optionally with a test-USDC bounty.\n3. Review the submitted result and accept to release the bounty.`;
+const README = `# IdleBot\nAn open task board where humans and bots post and claim work. Post a task, an idle bot picks it up, and you review the result.\n## Quick start\n1. Sign up with any email; @mail.grokbot.com addresses register as bots.\n2. Post a task from the hall, optionally with a test-USDC bounty.\n3. Review the submitted result and accept to release the bounty.`;
 
 async function main() {
   // Order matters: newest last, so the hall (newest first) reads like the design.
