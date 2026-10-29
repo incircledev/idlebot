@@ -81,6 +81,42 @@ function ResultPreview({ text, full, onToggle }: { text: string; full: boolean; 
   )
 }
 
+// Remembered across tabs: the confirmation link usually opens a new one.
+const PENDING_EMAIL_KEY = 'idlebot.pendingEmail'
+function rememberPendingEmail(email: string) {
+  try {
+    localStorage.setItem(PENDING_EMAIL_KEY, email)
+  } catch {
+    /* storage disabled: prefill is best effort */
+  }
+}
+function recallPendingEmail() {
+  try {
+    return localStorage.getItem(PENDING_EMAIL_KEY)
+  } catch {
+    return null
+  }
+}
+function forgetPendingEmail() {
+  try {
+    localStorage.removeItem(PENDING_EMAIL_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Read once per page load (before the confirm effect strips the query). */
+let landing: { failed: boolean; email: string } | null = null
+function confirmLanding() {
+  if (!landing) {
+    const params = new URLSearchParams(window.location.search)
+    const confirm = params.get('confirm')
+    const failed = confirm === 'failed' || confirm === 'invalid'
+    landing = { failed, email: failed ? params.get('email') || recallPendingEmail() || '' : '' }
+  }
+  return landing
+}
+
 function bountyError(v: string) {
   const t = v.trim()
   if (!t) return ''
@@ -136,8 +172,9 @@ export default function App() {
   const [view, setView] = useState<View>('hall')
   const [filter, setFilter] = useState<Filter>('all')
   const [expanded, setExpanded] = useState(false)
-  const [authMode, setAuthMode] = useState<AuthMode>('register')
-  const [email, setEmail] = useState('')
+  // A failed/invalid confirmation link means the account exists: land on 登录 with the address filled in.
+  const [authMode, setAuthMode] = useState<AuthMode>(() => (confirmLanding().failed ? 'login' : 'register'))
+  const [email, setEmail] = useState(() => (confirmLanding().failed ? confirmLanding().email : ''))
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
   const [pendingEmail, setPendingEmail] = useState<string | null>(null)
@@ -192,8 +229,10 @@ export default function App() {
     const confirm = params.get('confirm')
     if (!confirm) return
     window.history.replaceState(null, '', window.location.pathname)
-    if (confirm === 'ok') showToast('邮箱已确认，欢迎加入')
-    else showToast('确认链接无效或已过期，请重新发送', true)
+    if (confirm === 'ok') {
+      forgetPendingEmail()
+      showToast('邮箱已确认，欢迎加入')
+    } else showToast('确认链接无效或已过期，请重新发送', true)
   }, [showToast])
 
   useEffect(() => {
@@ -267,10 +306,12 @@ export default function App() {
     }
     if ('pendingEmail' in res.data) {
       setPendingEmail(res.data.pendingEmail)
+      rememberPendingEmail(res.data.pendingEmail)
       setResendLeft(60)
       setPassword('')
       return
     }
+    forgetPendingEmail()
     setEmail('')
     setPassword('')
     setName('')
@@ -285,6 +326,7 @@ export default function App() {
     const res = await resendConfirmation(target)
     if (!res.ok) return showToast(res.error, true)
     setResendLeft(60)
+    rememberPendingEmail(target)
     showToast('已重新发送，60 秒后可再发')
   }
 
@@ -472,19 +514,26 @@ export default function App() {
             />
             {authErr?.field === 'password' && <span className="errt">{authErr.msg}</span>}
           </label>
-          {authErr?.field === 'form' && <p className="errt">{authErr.msg}</p>}
-          {unconfirmed && (
-            <button
-              type="button"
-              className="btn ghost block"
-              disabled={resendLeft > 0}
-              onClick={() => void handleResend(email)}
-            >
-              {resendLeft > 0 ? `重新发送确认邮件（${resendLeft} 秒）` : '重新发送确认邮件'}
-            </button>
+          {authErr?.field === 'form' && (
+            <p className="errt">
+              {authErr.msg}
+              {unconfirmed && (
+                <>
+                  。
+                  <button
+                    type="button"
+                    className="link-inline"
+                    disabled={resendLeft > 0}
+                    onClick={() => void handleResend(email)}
+                  >
+                    {resendLeft > 0 ? `重新发送（${resendLeft} 秒）` : '重新发送'}
+                  </button>
+                </>
+              )}
+            </p>
           )}
           <button type="submit" className="btn pri block">
-            {authMode === 'register' ? '注册并进入' : '登录'}
+            {authMode === 'register' ? '注册' : '登录'}
           </button>
           <p className="foot-note">{BOT_DOMAIN} 邮箱注册为 Bot，其他为真人</p>
         </form>
