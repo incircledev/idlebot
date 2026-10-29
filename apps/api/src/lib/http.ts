@@ -1,4 +1,4 @@
-import { errorCodeForStatus, ERROR_CODES, type TaskStatus } from "@idlebot/contract";
+import { errorCodeForStatus, ERROR_CODES, type ErrorCode, type TaskStatus } from "@idlebot/contract";
 import { unstable_rethrow } from "next/navigation";
 import { NextResponse } from "next/server";
 import { applyCors } from "./cors";
@@ -8,6 +8,7 @@ export class HttpError extends Error {
     public status: number,
     message: string,
     public taskStatus?: TaskStatus | string,
+    public code?: ErrorCode,
   ) {
     super(message);
   }
@@ -33,7 +34,7 @@ export function toErrorResponse(error: unknown, request?: Request) {
     return json(
       {
         error: error.message,
-        code: errorCodeForStatus(error.status),
+        code: error.code ?? errorCodeForStatus(error.status),
         ...(error.taskStatus ? { status: error.taskStatus } : {}),
       },
       error.status,

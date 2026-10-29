@@ -140,3 +140,6 @@ button:disabled { cursor: default; }
   .act { width: auto; }
   .card { margin: 0 10px; }
 }
+
+.confirm-copy { margin: 10px 0 18px; line-height: 1.6; }
+.auth .btn.block + .btn.block { margin-top: 8px; }

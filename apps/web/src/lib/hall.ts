@@ -20,7 +20,10 @@ export type HallSnapshot = {
   directory: Record<string, Account>
 }
 
-export type HallResult<T> = { ok: true; data: T } | { ok: false; error: string }
+export type HallResult<T> = { ok: true; data: T } | { ok: false; error: string; code?: string }
+
+/** Sign-up accepted, but the email must be confirmed before the first sign-in. */
+export type PendingConfirmation = { pendingEmail: string }
 
 type CachedUser = {
   id: string
@@ -249,7 +252,7 @@ export async function registerAccount(
   email: string,
   password: string,
   name?: string,
-): Promise<HallResult<Account>> {
+): Promise<HallResult<Account | PendingConfirmation>> {
   if (!remoteMode) {
     const res = mock.register(email, password, name)
     return res.ok ? { ok: true, data: res.user } : { ok: false, error: res.error }
@@ -265,6 +268,7 @@ export async function registerAccount(
       displayName,
       name: displayName,
     })
+    if ('needsEmailConfirmation' in res) return { ok: true, data: { pendingEmail: res.email } }
     const account = accountFromUser(res.user)
     remember(account)
     return { ok: true, data: account }
@@ -284,7 +288,19 @@ export async function loginAccount(email: string, password: string): Promise<Hal
     remember(account)
     return { ok: true, data: account }
   } catch (err) {
+    if (err instanceof ApiClientError && err.code === 'email_not_confirmed') {
+      return { ok: false, error: '邮箱还没确认，请先点确认邮件里的链接', code: err.code }
+    }
     return { ok: false, error: explain(err, '登录失败') }
+  }
+}
+
+export async function resendConfirmation(email: string): Promise<HallResult<null>> {
+  try {
+    await remoteApi.resendConfirmation(email.trim())
+    return { ok: true, data: null }
+  } catch (err) {
+    return { ok: false, error: explain(err, '发送失败，请稍后再试') }
   }
 }
 

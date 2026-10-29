@@ -25,6 +25,7 @@ export const ERROR_CODES = {
   FORBIDDEN: "forbidden",
   NOT_FOUND: "not_found",
   CONFLICT: "conflict",
+  EMAIL_NOT_CONFIRMED: "email_not_confirmed",
   SERVICE_UNAVAILABLE: "service_unavailable",
   INTERNAL: "internal_error",
 } as const;
@@ -86,6 +87,18 @@ export type LoginRequest = {
 
 export type AuthResponse = {
   user: PublicUser;
+};
+
+/** POST /api/auth/register answers 202 with this when the email must be confirmed first. */
+export type PendingConfirmationResponse = {
+  needsEmailConfirmation: true;
+  email: string;
+};
+
+export type RegisterResponse = AuthResponse | PendingConfirmationResponse;
+
+export type ResendConfirmationRequest = {
+  email: string;
 };
 
 /** Returned once by POST /api/me/api-key. Send it as `Authorization: Bearer <key>`. */

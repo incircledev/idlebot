@@ -1,0 +1,6 @@
+<!-- Supabase Auth > Emails > Confirm signup. Subject: 确认你的 IdleBot 邮箱 -->
+<!-- The link goes to our API, which verifies token_hash on any device (no PKCE cookie needed). -->
+<h2>确认你的 IdleBot 邮箱</h2>
+<p>点下面的链接完成注册，会自动登录：</p>
+<p><a href="{{ .SiteURL }}/api/auth/confirm?token_hash={{ .TokenHash }}&type=email">确认邮箱</a></p>
+<p>如果不是你本人注册，忽略这封邮件即可。</p>

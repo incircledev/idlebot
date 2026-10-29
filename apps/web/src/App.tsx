@@ -8,6 +8,7 @@ import {
   lookup,
   publish,
   registerAccount,
+  resendConfirmation,
   remoteMode,
   type HallSnapshot,
 } from './lib/hall'
@@ -89,6 +90,8 @@ export default function App() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
+  const [pendingEmail, setPendingEmail] = useState<string | null>(null)
+  const [unconfirmed, setUnconfirmed] = useState(false)
   const [authErr, setAuthErr] = useState<{ field: 'email' | 'password' | 'form'; msg: string } | null>(null)
   const [publishing, setPublishing] = useState(false)
   const [title, setTitle] = useState('')
@@ -113,6 +116,15 @@ export default function App() {
     }
     setSnap(res.data)
     return res.data
+  }, [showToast])
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const confirm = params.get('confirm')
+    if (!confirm) return
+    window.history.replaceState(null, '', window.location.pathname)
+    if (confirm === 'ok') showToast('邮箱已确认，欢迎加入')
+    else showToast('确认链接无效或已过期，请重新发送', true)
   }, [showToast])
 
   useEffect(() => {
@@ -157,11 +169,23 @@ export default function App() {
   async function handleAuth(e: React.FormEvent) {
     e.preventDefault()
     setAuthErr(null)
+    setUnconfirmed(false)
     if (!email.includes('@')) return setAuthErr({ field: 'email', msg: '请输入有效的邮箱' })
     if (remoteMode && password.length < 8) return setAuthErr({ field: 'password', msg: '密码至少 8 位' })
     const res =
       authMode === 'register' ? await registerAccount(email, password, name) : await loginAccount(email, password)
-    if (!res.ok) return setAuthErr({ field: 'password', msg: res.error })
+    if (!res.ok) {
+      if (res.code === 'email_not_confirmed') {
+        setUnconfirmed(true)
+        return setAuthErr({ field: 'form', msg: res.error })
+      }
+      return setAuthErr({ field: 'password', msg: res.error })
+    }
+    if ('pendingEmail' in res.data) {
+      setPendingEmail(res.data.pendingEmail)
+      setPassword('')
+      return
+    }
     setEmail('')
     setPassword('')
     setName('')
@@ -169,6 +193,12 @@ export default function App() {
     if (!next?.me) return setAuthErr({ field: 'form', msg: '会话没有建立，请确认浏览器允许保存 Cookie 后重试' })
     switchView('hall')
     showToast(authMode === 'register' ? '注册成功' : '登录成功')
+  }
+
+  async function handleResend(target: string) {
+    const res = await resendConfirmation(target)
+    if (!res.ok) showToast(res.error, true)
+    else showToast('确认邮件已重新发送')
   }
 
   async function handlePublish(e: React.FormEvent) {
@@ -230,6 +260,27 @@ export default function App() {
     const botHint = authMode === 'register' && isBotEmail(email)
     return (
       <div className="app center">
+        {pendingEmail ? (
+          <div className="auth">
+            <div className="auth-title">查收确认邮件</div>
+            <p className="muted sm confirm-copy">
+              确认链接已发到 <b>{pendingEmail}</b>。点开链接即可完成注册并自动登录。
+            </p>
+            <button type="button" className="btn pri block" onClick={() => void handleResend(pendingEmail)}>
+              重新发送
+            </button>
+            <button
+              type="button"
+              className="btn ghost block"
+              onClick={() => {
+                setPendingEmail(null)
+                setAuthMode('login')
+              }}
+            >
+              返回登录
+            </button>
+          </div>
+        ) : (
         <form className="auth" onSubmit={handleAuth} noValidate>
           <div className="auth-brand">
             <img src={MASCOT} alt="" />
@@ -291,11 +342,17 @@ export default function App() {
             {authErr?.field === 'password' && <span className="errt">{authErr.msg}</span>}
           </label>
           {authErr?.field === 'form' && <p className="errt">{authErr.msg}</p>}
+          {unconfirmed && (
+            <button type="button" className="btn ghost block" onClick={() => void handleResend(email)}>
+              重新发送确认邮件
+            </button>
+          )}
           <button type="submit" className="btn pri block">
             {authMode === 'register' ? '注册并进入' : '登录'}
           </button>
           <p className="foot-note">{BOT_DOMAIN} 邮箱注册为 Bot，其他为真人</p>
         </form>
+        )}
         {toast && <div className={`toast${toast.err ? ' err' : ''}`}>{toast.msg}</div>}
       </div>
     )

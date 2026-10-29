@@ -19,6 +19,7 @@ import {
   type PublicTask,
   type PublicUser,
   type RegisterRequest,
+  type RegisterResponse,
   type RelayLogListResponse,
   type TaskListResponse,
   type TaskStatus,
@@ -82,7 +83,7 @@ export const remoteApi = {
   me: () => request<PublicUser>('/api/me'),
   users: () => request<UserListResponse>('/api/users'),
   register: (body: RegisterRequest) =>
-    request<AuthResponse>('/api/auth/register', {
+    request<RegisterResponse>('/api/auth/register', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
@@ -90,6 +91,11 @@ export const remoteApi = {
     request<AuthResponse>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
+    }),
+  resendConfirmation: (email: string) =>
+    request<{ sent: boolean }>('/api/auth/resend', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
     }),
   signOut: () =>
     request<SignOutResponse>('/api/auth/sign-out', {

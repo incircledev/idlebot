@@ -1,4 +1,6 @@
 import { applyCors } from "@/lib/cors";
+import { ERROR_CODES } from "@idlebot/contract";
+import type { EmailOtpType } from "@supabase/supabase-js";
 import { HttpError, json } from "@/lib/http";
 import { classifyEmail } from "@/lib/market-rules";
 import { cookieSupabase } from "@/lib/supabase";
@@ -46,6 +48,13 @@ function respond(body: unknown, status: number, request: Request) {
 
 /** Supabase Auth error -> our status code. 4xx stays 4xx; anything else is 502. */
 function authFailure(error: { status?: number; message: string; code?: string }, request: Request) {
+  if (error.code === "email_not_confirmed") {
+    return json(
+      { error: "Email not confirmed", code: ERROR_CODES.EMAIL_NOT_CONFIRMED },
+      403,
+      request,
+    );
+  }
   const status = error.status && error.status >= 400 && error.status < 500 ? error.status : 502;
   const mapped = error.code === "user_already_exists" ? 409 : status;
   return json({ error: error.message }, mapped, request);
@@ -67,7 +76,7 @@ export async function registerWithPassword(request: Request) {
   const { data, error } = await supabase.auth.signUp({
     email: classified.email,
     password,
-    options: { data: { display_name: displayName } },
+    options: { data: { display_name: displayName }, emailRedirectTo: confirmRedirect(request) },
   });
   if (error) return authFailure(error, request);
   if (!data.user) throw new HttpError(502, "Supabase returned no user");
@@ -75,10 +84,11 @@ export async function registerWithPassword(request: Request) {
   if (data.user.identities && data.user.identities.length === 0) {
     return json({ error: "User already exists" }, 409, request);
   }
-  const profile = await ensureProfile(data.user.id, classified.email, displayName);
+  // No profile until the address is confirmed, so an unconfirmed sign-up cannot hold the email.
   if (!data.session) {
-    return respond({ user: toPublicUser(profile), needsEmailConfirmation: true }, 202, request);
+    return respond({ needsEmailConfirmation: true, email: classified.email }, 202, request);
   }
+  const profile = await ensureProfile(data.user.id, classified.email, displayName);
   return respond({ user: toPublicUser(profile) }, 201, request);
 }
 
@@ -94,6 +104,51 @@ export async function loginWithPassword(request: Request) {
   if (error) return authFailure(error, request);
   const profile = await ensureProfile(data.user.id, classified.email);
   return respond({ user: toPublicUser(profile) }, 200, request);
+}
+
+/** Where the confirmation link lands: the web origin, which serves /api too. */
+function confirmRedirect(request: Request) {
+  const base = process.env.PUBLIC_SITE_URL || new URL(request.url).origin;
+  return new URL("/api/auth/confirm", base).toString();
+}
+
+const OTP_TYPES: EmailOtpType[] = ["signup", "email", "invite", "magiclink", "recovery", "email_change"];
+
+/**
+ * GET /api/auth/confirm?token_hash=…&type=email from the confirmation mail.
+ * Works from any device (no PKCE verifier needed). Signs the browser in and redirects to the hall.
+ */
+export async function confirmEmail(request: Request) {
+  const url = new URL(request.url);
+  const tokenHash = url.searchParams.get("token_hash");
+  const type = (url.searchParams.get("type") || "email") as EmailOtpType;
+  const site = process.env.PUBLIC_SITE_URL || url.origin;
+  const done = (query: string) => NextResponse.redirect(new URL(`/?${query}`, site), 303);
+  if (!tokenHash || !OTP_TYPES.includes(type)) return done("confirm=invalid");
+  const supabase = await cookieSupabase();
+  const { data, error } = await supabase.auth.verifyOtp({ type, token_hash: tokenHash });
+  if (error || !data.user?.email) return done("confirm=failed");
+  const meta = data.user.user_metadata as { display_name?: unknown } | undefined;
+  await ensureProfile(
+    data.user.id,
+    data.user.email,
+    typeof meta?.display_name === "string" ? meta.display_name : undefined,
+  );
+  return done("confirm=ok");
+}
+
+/** POST /api/auth/resend { email }. Always 200 so it does not reveal which emails exist. */
+export async function resendConfirmation(request: Request) {
+  const body = await readBody(request);
+  const classified = emailOf(body);
+  const supabase = await cookieSupabase();
+  const { error } = await supabase.auth.resend({
+    type: "signup",
+    email: classified.email,
+    options: { emailRedirectTo: confirmRedirect(request) },
+  });
+  if (error?.status === 429) return json({ error: "Too many emails, try later" }, 429, request);
+  return respond({ sent: true }, 200, request);
 }
 
 export async function signOut(request: Request) {
