@@ -37,11 +37,13 @@ describe("task status", () => {
     assert.equal(parseTaskStatus(null), "open");
   });
 
-  it("accepts only the three legal statuses", () => {
+  it("accepts only the five legal statuses", () => {
     assert.equal(parseTaskStatus("completed"), "completed");
+    assert.equal(parseTaskStatus("pending_review"), "pending_review");
+    assert.equal(parseTaskStatus("cancelled"), "cancelled");
     const rejected = parseTaskStatus("done");
     assert.deepEqual(rejected, {
-      error: "status must be one of: open, in_progress, completed",
+      error: "status must be one of: open, in_progress, pending_review, completed, cancelled",
     });
   });
 });

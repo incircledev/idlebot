@@ -1,7 +1,10 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
+  boolean,
   check,
   index,
+  integer,
   pgTable,
   text,
   timestamp,
@@ -22,6 +25,7 @@ export const user = pgTable(
     displayName: text("display_name"),
     kind: text("kind").notNull(),
     status: text("status"),
+    walletAddress: text("wallet_address"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -50,11 +54,20 @@ export const task = pgTable(
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    /** USDC base units (6 decimals). 0 = free task. */
+    bountyAmount: bigint("bounty_amount", { mode: "number" }).notNull().default(0),
+    payerAddress: text("payer_address"),
+    payoutAddress: text("payout_address"),
+    payoutStatus: text("payout_status").notNull().default("none"),
+    rejectCount: integer("reject_count").notNull().default(0),
+    rejectReason: text("reject_reason"),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
   },
   (table) => [
     check(
       "task_status_allowed",
-      sql`${table.status} in ('open', 'in_progress', 'completed')`,
+      sql`${table.status} in ('open', 'in_progress', 'pending_review', 'completed', 'cancelled')`,
     ),
     index("task_status_idx").on(table.status),
     index("task_publisher_idx").on(table.publisherId),
@@ -103,6 +116,33 @@ export const apiKey = pgTable(
   ],
 );
 
+/** One row per on-chain money movement. Unique (task_id, kind) makes payout and refund exactly-once. */
+export const bountyLedger = pgTable(
+  "bounty_ledger",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => task.id),
+    kind: text("kind").notNull(),
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    fromAddress: text("from_address"),
+    toAddress: text("to_address"),
+    txHash: text("tx_hash"),
+    status: text("status").notNull().default("pending"),
+    mock: boolean("mock").notNull().default(false),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check("bounty_ledger_kind_check", sql`${table.kind} in ('payment', 'payout', 'refund')`),
+    uniqueIndex("bounty_ledger_task_kind_idx").on(table.taskId, table.kind),
+    uniqueIndex("bounty_ledger_tx_idx").on(table.txHash).where(sql`${table.txHash} is not null`),
+  ],
+);
+
+export type LedgerRow = typeof bountyLedger.$inferSelect;
 export type UserRow = typeof user.$inferSelect;
 export type TaskRow = typeof task.$inferSelect;
 export type RelayLogRow = typeof relayLog.$inferSelect;

@@ -1,7 +1,16 @@
-import type { PublicTask, TaskStatus } from "@idlebot/contract";
-import { and, asc, desc, eq, or } from "drizzle-orm";
+import {
+  ERROR_CODES,
+  isTaskStatus,
+  type PayoutStatus,
+  type PublicLedgerEntry,
+  type PublicTask,
+  type TaskStatus,
+} from "@idlebot/contract";
+import { and, asc, desc, eq, lt, or } from "drizzle-orm";
 import { getDb } from "@/db/client";
-import { relayLog, task, type TaskRow, type UserRow } from "@/db/schema";
+import { bountyLedger, relayLog, task, type LedgerRow, type TaskRow, type UserRow } from "@/db/schema";
+import { autoAcceptAt, decideReject, formatUsdc, parseBounty, reviewWindowSeconds } from "@/lib/bounty/money";
+import { chargeBounty, explorerTx, platformAddress, sendFromPlatform, type PaymentOutcome } from "@/lib/bounty/x402";
 import { decideCompletion } from "@/lib/complete-rules";
 import { HttpError } from "@/lib/http";
 import { isUuid, parseTaskStatus } from "@/lib/market-rules";
@@ -10,10 +19,12 @@ import { getEmailRelay, toPublicRelay } from "@/lib/relay";
 export type { PublicTask };
 
 function asStatus(value: string): TaskStatus {
-  if (value === "open" || value === "in_progress" || value === "completed") {
-    return value;
-  }
+  if (isTaskStatus(value)) return value;
   throw new HttpError(500, "Task row has a status outside the allowed set");
+}
+
+function asPayoutStatus(value: string): PayoutStatus {
+  return value === "pending" || value === "paid" || value === "failed" || value === "refunded" ? value : "none";
 }
 
 export function toPublicTask(row: TaskRow): PublicTask {
@@ -28,6 +39,14 @@ export function toPublicTask(row: TaskRow): PublicTask {
     createdAt: row.createdAt.toISOString(),
     claimedAt: row.claimedAt ? row.claimedAt.toISOString() : null,
     completedAt: row.completedAt ? row.completedAt.toISOString() : null,
+    bounty: row.bountyAmount > 0 ? formatUsdc(row.bountyAmount) : null,
+    rejectCount: row.rejectCount,
+    rejectReason: row.rejectReason,
+    submittedAt: row.submittedAt ? row.submittedAt.toISOString() : null,
+    autoAcceptAt:
+      row.status === "pending_review" ? (autoAcceptAt(row.submittedAt)?.toISOString() ?? null) : null,
+    cancelledAt: row.cancelledAt ? row.cancelledAt.toISOString() : null,
+    payoutStatus: asPayoutStatus(row.payoutStatus),
   };
 }
 
@@ -41,26 +60,74 @@ async function findTask(id: string) {
   return row ?? null;
 }
 
-export async function createTask(publisher: UserRow, titleRaw: unknown, bodyRaw: unknown) {
-  const title = typeof titleRaw === "string" ? titleRaw.trim() : "";
-  const body = typeof bodyRaw === "string" ? bodyRaw.trim() : "";
+export type CreateOutcome =
+  | { kind: "created"; task: PublicTask; headers?: Record<string, string> }
+  | Extract<PaymentOutcome, { kind: "required" }>;
+
+/**
+ * Free task: insert and return. Bounty task: answer 402 until the x402 payment settles to the
+ * platform wallet, then insert the task as open together with its payment ledger row.
+ */
+export async function createTask(
+  publisher: UserRow,
+  input: { title?: unknown; body?: unknown; bounty?: unknown },
+  request?: Request,
+): Promise<CreateOutcome> {
+  const title = typeof input.title === "string" ? input.title.trim() : "";
+  const body = typeof input.body === "string" ? input.body.trim() : "";
   if (!title || !body) throw new HttpError(400, "title and body are required");
   if (title.length > 160) throw new HttpError(400, "title is too long");
   if (body.length > 20000) throw new HttpError(400, "body is too long");
+  const units = parseBounty(input.bounty);
+  if (typeof units === "object") throw new HttpError(400, units.error);
 
-  const [row] = await getDb()
-    .insert(task)
-    .values({
-      title,
-      body,
-      publisherId: publisher.id,
-      status: "open",
-    })
-    .returning();
-  return toPublicTask(row);
+  if (units === 0) {
+    const [row] = await getDb()
+      .insert(task)
+      .values({ title, body, publisherId: publisher.id, status: "open" })
+      .returning();
+    return { kind: "created", task: toPublicTask(row) };
+  }
+
+  if (!request) throw new HttpError(500, "Bounty tasks need the HTTP request for x402");
+  const paid = await chargeBounty(request, units, `Publish "${title.slice(0, 60)}" with a ${formatUsdc(units)} USDC bounty`);
+  if (paid.kind === "required") return paid;
+
+  try {
+    const row = await getDb().transaction(async (tx) => {
+      const [created] = await tx
+        .insert(task)
+        .values({
+          title,
+          body,
+          publisherId: publisher.id,
+          status: "open",
+          bountyAmount: units,
+          payerAddress: paid.payer,
+        })
+        .returning();
+      await tx.insert(bountyLedger).values({
+        taskId: created.id,
+        kind: "payment",
+        amount: units,
+        fromAddress: paid.payer,
+        toAddress: platformAddress(),
+        txHash: paid.txHash,
+        status: "confirmed",
+        mock: paid.mock,
+      });
+      return created;
+    });
+    return { kind: "created", task: toPublicTask(row), headers: paid.headers };
+  } catch (error) {
+    // Money already moved. Log enough to refund by hand.
+    console.error(`[bounty] settled ${paid.txHash} from ${paid.payer} but the task insert failed`, error);
+    throw new HttpError(500, `Payment settled (${paid.txHash}) but the task was not saved; contact support for a refund`);
+  }
 }
 
 export async function listTasks(statusRaw: string | null) {
+  await sweepDueReviews();
   const parsed = parseTaskStatus(statusRaw);
   if (typeof parsed !== "string") throw new HttpError(400, parsed.error);
   const rows = await getDb()
@@ -72,6 +139,7 @@ export async function listTasks(statusRaw: string | null) {
 }
 
 export async function listMine(userId: string) {
+  await sweepDueReviews();
   const rows = await getDb()
     .select()
     .from(task)
@@ -86,6 +154,8 @@ export async function listMine(userId: string) {
 }
 
 export async function getTask(id: string) {
+  requireUuid(id);
+  await sweepDueReviews(id);
   const row = await findTask(id);
   if (!row) throw new HttpError(404, "Task not found");
   return toPublicTask(row);
@@ -93,11 +163,23 @@ export async function getTask(id: string) {
 
 export async function claimTask(claimer: UserRow, id: string) {
   requireUuid(id);
+  const current = await findTask(id);
+  if (!current) throw new HttpError(404, "Task not found");
+  if (current.bountyAmount > 0 && !claimer.walletAddress) {
+    throw new HttpError(
+      400,
+      "Set a payout wallet address (PATCH /api/me { walletAddress }) before claiming a bounty task",
+      current.status,
+      ERROR_CODES.WALLET_REQUIRED,
+    );
+  }
   const [claimed] = await getDb()
     .update(task)
     .set({
       status: "in_progress",
       assigneeId: claimer.id,
+      // Snapshot the payout address so a later profile edit cannot redirect this bounty.
+      payoutAddress: current.bountyAmount > 0 ? claimer.walletAddress : null,
       claimedAt: new Date(),
       updatedAt: new Date(),
     })
@@ -126,69 +208,62 @@ export async function claimTask(claimer: UserRow, id: string) {
   return toPublicTask(claimed);
 }
 
-/** `actorId` set means a user call: once claimed, only the assignee may complete it. Relay paths omit it. */
+/**
+ * `actorId` set means a user call: once claimed, only the assignee may complete it. Relay paths omit it.
+ * Free tasks go in_progress -> completed. Bounty tasks go in_progress -> pending_review and wait for
+ * the publisher (accept / reject) or the review timeout.
+ */
 export async function completeTask(id: string, resultRaw: unknown, actorId?: string) {
   requireUuid(id);
-  if (actorId) {
-    const current = await findTask(id);
-    if (!current) throw new HttpError(404, "Task not found");
-    if (current.assigneeId && current.assigneeId !== actorId) {
-      throw new HttpError(403, "Only the assignee can complete this task");
-    }
+  const current = await findTask(id);
+  if (!current) throw new HttpError(404, "Task not found");
+  if (actorId && current.assigneeId && current.assigneeId !== actorId) {
+    throw new HttpError(403, "Only the assignee can complete this task");
   }
   const trimmed = typeof resultRaw === "string" ? resultRaw.trim() : "";
   if (trimmed.length > 20000) throw new HttpError(400, "result is too long");
+  const review = current.bountyAmount > 0;
 
-  // CAS the open transition first so two completes cannot both rewrite completedAt.
-  if (trimmed) {
+  const apply = async (result: string) => {
+    const now = new Date();
     const [updated] = await getDb()
       .update(task)
-      .set({
-        status: "completed",
-        result: trimmed,
-        completedAt: new Date(),
-        updatedAt: new Date(),
-      })
+      .set(
+        review
+          ? { status: "pending_review", result, submittedAt: now, updatedAt: now }
+          : { status: "completed", result, completedAt: now, updatedAt: now },
+      )
       .where(and(eq(task.id, id), eq(task.status, "in_progress")))
       .returning();
+    return updated ?? null;
+  };
+
+  // CAS the in_progress transition first so two completes cannot both rewrite the result.
+  if (trimmed) {
+    const updated = await apply(trimmed);
     if (updated) return toPublicTask(updated);
   }
 
   const existing = await findTask(id);
   if (!existing) throw new HttpError(404, "Task not found");
-
-  const decision = decideCompletion(existing, resultRaw);
-  if (decision.kind === "idempotent") {
-    return toPublicTask(existing);
-  }
-  if (decision.kind === "missing_result") {
-    throw new HttpError(400, "result is required");
-  }
+  // A submitted bounty result is "done" from the submitter's point of view: same result is idempotent.
+  const snapshot = {
+    status: existing.status === "pending_review" ? "completed" : existing.status,
+    result: existing.result,
+  };
+  const decision = decideCompletion(snapshot, resultRaw);
+  if (decision.kind === "idempotent") return toPublicTask(existing);
+  if (decision.kind === "missing_result") throw new HttpError(400, "result is required");
   if (decision.kind === "apply") {
-    const [updated] = await getDb()
-      .update(task)
-      .set({
-        status: "completed",
-        result: decision.result,
-        completedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(and(eq(task.id, id), eq(task.status, "in_progress")))
-      .returning();
+    const updated = await apply(decision.result);
     if (updated) return toPublicTask(updated);
     const latest = await findTask(id);
     if (!latest) throw new HttpError(404, "Task not found");
-    const again = decideCompletion(latest, resultRaw);
-    if (again.kind === "idempotent") return toPublicTask(latest);
-    throw new HttpError(
-      409,
-      again.kind === "conflict" && again.reason === "different_result"
-        ? `Task is already completed with a different result (status: ${latest.status})`
-        : `Illegal status transition from ${latest.status} to completed`,
-      latest.status,
-    );
+    if (latest.result === decision.result && (latest.status === "completed" || latest.status === "pending_review")) {
+      return toPublicTask(latest);
+    }
+    throw new HttpError(409, `Illegal status transition from ${latest.status} to completed`, latest.status);
   }
-
   throw new HttpError(
     409,
     decision.reason === "different_result"
@@ -196,6 +271,190 @@ export async function completeTask(id: string, resultRaw: unknown, actorId?: str
       : `Illegal status transition from ${existing.status} to completed`,
     existing.status,
   );
+}
+
+// ---------- bounty review, payout, refund ----------
+
+/** Publisher accepts a pending_review task (or the timeout does, with actor = null). Pays out exactly once. */
+export async function acceptTask(actor: UserRow | null, id: string) {
+  requireUuid(id);
+  const now = new Date();
+  const conditions = [eq(task.id, id), eq(task.status, "pending_review")];
+  if (actor) conditions.push(eq(task.publisherId, actor.id));
+  else conditions.push(lt(task.submittedAt, new Date(now.getTime() - reviewWindowSeconds() * 1000)));
+  const [accepted] = await getDb()
+    .update(task)
+    .set({ status: "completed", completedAt: now, updatedAt: now, payoutStatus: "pending" })
+    .where(and(...conditions))
+    .returning();
+
+  if (accepted) return toPublicTask(await payout(accepted));
+
+  const existing = await findTask(id);
+  if (!existing) throw new HttpError(404, "Task not found");
+  if (actor && existing.publisherId !== actor.id) throw new HttpError(403, "Only the publisher can accept");
+  if (existing.status === "completed" && existing.bountyAmount > 0) {
+    // Lost the race or a repeat click: never a second transfer. A failed payout may be retried.
+    if (existing.payoutStatus === "failed") return toPublicTask(await payout(existing, true));
+    return toPublicTask(existing);
+  }
+  throw new HttpError(409, `Illegal status transition from ${existing.status} to completed`, existing.status);
+}
+
+export async function rejectTask(actor: UserRow, id: string, reasonRaw: unknown) {
+  requireUuid(id);
+  const current = await findTask(id);
+  if (!current) throw new HttpError(404, "Task not found");
+  const decision = decideReject(current, actor.id, reasonRaw);
+  if (decision.kind === "error") throw new HttpError(decision.status, decision.message, current.status);
+  const [rejected] = await getDb()
+    .update(task)
+    .set({
+      status: "in_progress",
+      rejectCount: current.rejectCount + 1,
+      rejectReason: decision.reason,
+      result: null,
+      submittedAt: null,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(task.id, id), eq(task.status, "pending_review"), eq(task.rejectCount, current.rejectCount)))
+    .returning();
+  if (!rejected) {
+    const latest = await findTask(id);
+    throw new HttpError(409, `Task changed while rejecting (status: ${latest?.status ?? "unknown"})`, latest?.status);
+  }
+  return toPublicTask(rejected);
+}
+
+/** Publisher cancels an unclaimed task. A bounty goes back to the address that paid it. */
+export async function cancelTask(actor: UserRow, id: string) {
+  requireUuid(id);
+  const now = new Date();
+  const [cancelled] = await getDb()
+    .update(task)
+    .set({ status: "cancelled", cancelledAt: now, updatedAt: now })
+    .where(and(eq(task.id, id), eq(task.status, "open"), eq(task.publisherId, actor.id)))
+    .returning();
+  if (cancelled) return toPublicTask(cancelled.bountyAmount > 0 ? await refund(cancelled) : cancelled);
+
+  const existing = await findTask(id);
+  if (!existing) throw new HttpError(404, "Task not found");
+  if (existing.publisherId !== actor.id) throw new HttpError(403, "Only the publisher can cancel");
+  if (existing.status === "cancelled") {
+    if (existing.bountyAmount > 0 && existing.payoutStatus !== "refunded") return toPublicTask(await refund(existing));
+    return toPublicTask(existing);
+  }
+  throw new HttpError(409, `Only open tasks can be cancelled (status: ${existing.status})`, existing.status);
+}
+
+/**
+ * Move money out of the platform wallet once per (task, kind). The unique ledger index is the
+ * lock: whoever inserts the pending row sends; everyone else returns the current task.
+ * `retry` re-claims a failed row with a CAS failed -> pending.
+ */
+async function settleOut(row: TaskRow, kind: "payout" | "refund", to: string | null, retry = false): Promise<TaskRow> {
+  const db = getDb();
+  let claimed: LedgerRow | undefined;
+  if (retry) {
+    [claimed] = await db
+      .update(bountyLedger)
+      .set({ status: "pending", error: null, updatedAt: new Date() })
+      .where(and(eq(bountyLedger.taskId, row.id), eq(bountyLedger.kind, kind), eq(bountyLedger.status, "failed")))
+      .returning();
+  } else {
+    [claimed] = await db
+      .insert(bountyLedger)
+      .values({ taskId: row.id, kind, amount: row.bountyAmount, toAddress: to, status: "pending" })
+      .onConflictDoNothing()
+      .returning();
+  }
+  if (!claimed) return (await findTask(row.id)) ?? row;
+
+  const done = kind === "payout" ? "paid" : "refunded";
+  try {
+    if (!to) throw new Error(kind === "payout" ? "assignee has no payout address" : "payer address unknown");
+    const sent = await sendFromPlatform(to, row.bountyAmount, `${kind}/${row.id}`);
+    await db
+      .update(bountyLedger)
+      .set({ status: "confirmed", txHash: sent.txHash, fromAddress: sent.from, mock: sent.mock, updatedAt: new Date() })
+      .where(eq(bountyLedger.id, claimed.id));
+    const [updated] = await db
+      .update(task)
+      .set({ payoutStatus: done, updatedAt: new Date() })
+      .where(eq(task.id, row.id))
+      .returning();
+    return updated ?? row;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[bounty] ${kind} for ${row.id} failed: ${message}`);
+    await db
+      .update(bountyLedger)
+      .set({ status: "failed", error: message.slice(0, 500), updatedAt: new Date() })
+      .where(eq(bountyLedger.id, claimed.id));
+    const [updated] = await db
+      .update(task)
+      .set({ payoutStatus: "failed", updatedAt: new Date() })
+      .where(eq(task.id, row.id))
+      .returning();
+    return updated ?? row;
+  }
+}
+
+function payout(row: TaskRow, retry = false) {
+  if (row.bountyAmount <= 0) return Promise.resolve(row);
+  return settleOut(row, "payout", row.payoutAddress, retry);
+}
+
+function refund(row: TaskRow) {
+  return settleOut(row, "refund", row.payerAddress, row.payoutStatus === "failed");
+}
+
+const SWEEP_EVERY_MS = 5_000;
+const sweepState = (globalThis as unknown as { bountySweep?: { last: number } }).bountySweep ??
+  ((globalThis as unknown as { bountySweep: { last: number } }).bountySweep = { last: 0 });
+
+/** Lazy auto-accept: pending_review tasks past the review window are accepted on the next read. */
+export async function sweepDueReviews(onlyId?: string) {
+  if (!onlyId && Date.now() - sweepState.last < SWEEP_EVERY_MS) return;
+  if (!onlyId) sweepState.last = Date.now();
+  const cutoff = new Date(Date.now() - reviewWindowSeconds() * 1000);
+  const where = [eq(task.status, "pending_review"), lt(task.submittedAt, cutoff)];
+  if (onlyId) where.push(eq(task.id, onlyId));
+  const due = await getDb().select({ id: task.id }).from(task).where(and(...where)).limit(20);
+  for (const { id } of due) {
+    try {
+      await acceptTask(null, id);
+    } catch (error) {
+      console.error(`[bounty] auto-accept ${id} failed`, error);
+    }
+  }
+}
+
+function toLedgerEntry(row: LedgerRow): PublicLedgerEntry {
+  const status = row.status === "confirmed" || row.status === "failed" ? row.status : "pending";
+  return {
+    kind: row.kind === "payout" || row.kind === "refund" ? row.kind : "payment",
+    amount: formatUsdc(row.amount),
+    from: row.fromAddress,
+    to: row.toAddress,
+    txHash: row.txHash,
+    status,
+    mock: row.mock,
+    explorerUrl: explorerTx(row.txHash, row.mock),
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+/** Bounty receipt: payment, payout and refund rows. Tx hashes are public on chain anyway. */
+export async function getReceipt(id: string) {
+  const row = await findTask(id);
+  if (!row) throw new HttpError(404, "Task not found");
+  const rows = await getDb()
+    .select()
+    .from(bountyLedger)
+    .where(eq(bountyLedger.taskId, id))
+    .orderBy(asc(bountyLedger.createdAt));
+  return { taskId: id, network: "eip155:84532" as const, items: rows.map(toLedgerEntry) };
 }
 
 export async function listRelayLogs(viewerId: string, taskId: string) {

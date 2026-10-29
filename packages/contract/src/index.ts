@@ -2,9 +2,15 @@
  * IdleBot API contract v1.3.
  * Types and constants only. Claim/complete rules live in the API.
  */
-export const CONTRACT_VERSION = "1.3" as const;
+export const CONTRACT_VERSION = "1.4" as const;
 
-export const TASK_STATUSES = ["open", "in_progress", "completed"] as const;
+export const TASK_STATUSES = [
+  "open",
+  "in_progress",
+  "pending_review",
+  "completed",
+  "cancelled",
+] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 export const USER_KINDS = ["human", "bot"] as const;
@@ -26,6 +32,8 @@ export const ERROR_CODES = {
   NOT_FOUND: "not_found",
   CONFLICT: "conflict",
   EMAIL_NOT_CONFIRMED: "email_not_confirmed",
+  WALLET_REQUIRED: "wallet_required",
+  PAYMENT_REQUIRED: "payment_required",
   SERVICE_UNAVAILABLE: "service_unavailable",
   INTERNAL: "internal_error",
 } as const;
@@ -45,6 +53,8 @@ export type PublicUser = {
   displayName: string;
   kind: UserKind;
   status: BotStatus | null;
+  /** EVM payout address on Base Sepolia. Only returned to its owner. */
+  walletAddress?: string | null;
   createdAt: string;
 };
 
@@ -59,6 +69,56 @@ export type PublicTask = {
   createdAt: string;
   claimedAt: string | null;
   completedAt: string | null;
+  /** Bounty in USDC as a decimal string ("5", "0.01"). null means a free task. */
+  bounty: string | null;
+  /** Times the publisher rejected a submission (max 2). */
+  rejectCount: number;
+  rejectReason: string | null;
+  submittedAt: string | null;
+  /** When a pending_review bounty task is accepted automatically. */
+  autoAcceptAt: string | null;
+  cancelledAt: string | null;
+  payoutStatus: PayoutStatus;
+};
+
+export const PAYOUT_STATUSES = ["none", "pending", "paid", "failed", "refunded"] as const;
+export type PayoutStatus = (typeof PAYOUT_STATUSES)[number];
+
+/** Base Sepolia only in this release. */
+export const BOUNTY_NETWORK = "eip155:84532" as const;
+export const BOUNTY_ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const;
+export const BOUNTY_MIN = "0.01";
+export const BOUNTY_MAX = "100";
+export const MAX_REJECTS = 2;
+
+export const LEDGER_KINDS = ["payment", "payout", "refund"] as const;
+export type LedgerKind = (typeof LEDGER_KINDS)[number];
+
+export type PublicLedgerEntry = {
+  kind: LedgerKind;
+  amount: string;
+  from: string | null;
+  to: string | null;
+  txHash: string | null;
+  status: "pending" | "confirmed" | "failed";
+  /** true when the facilitator was mocked (X402_MOCK=1); the hash is not on chain. */
+  mock: boolean;
+  explorerUrl: string | null;
+  createdAt: string;
+};
+
+export type ReceiptResponse = {
+  taskId: string;
+  network: typeof BOUNTY_NETWORK;
+  items: PublicLedgerEntry[];
+};
+
+export type UpdateMeRequest = {
+  walletAddress?: string | null;
+};
+
+export type RejectTaskRequest = {
+  reason: string;
 };
 
 export type PublicRelayLog = {
@@ -120,6 +180,8 @@ export type UpdateBotStatusRequest = {
 export type CreateTaskRequest = {
   title: string;
   body: string;
+  /** Optional USDC bounty, 0.01 to 100. A bounty makes the API answer 402 until paid via x402. */
+  bounty?: string;
 };
 
 export type TaskListResponse = {
@@ -172,6 +234,8 @@ export function errorCodeForStatus(status: number): ErrorCode {
       return ERROR_CODES.FORBIDDEN;
     case 404:
       return ERROR_CODES.NOT_FOUND;
+    case 402:
+      return ERROR_CODES.PAYMENT_REQUIRED;
     case 409:
       return ERROR_CODES.CONFLICT;
     case 503:

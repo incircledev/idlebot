@@ -4,7 +4,7 @@ import type { EmailOtpType } from "@supabase/supabase-js";
 import { HttpError, json } from "@/lib/http";
 import { classifyEmail } from "@/lib/market-rules";
 import { cookieSupabase } from "@/lib/supabase";
-import { ensureProfile, toPublicUser } from "@/lib/users";
+import { ensureProfile, toSelfUser } from "@/lib/users";
 import { NextResponse } from "next/server";
 
 type AuthBody = {
@@ -89,7 +89,7 @@ export async function registerWithPassword(request: Request) {
     return respond({ needsEmailConfirmation: true, email: classified.email }, 202, request);
   }
   const profile = await ensureProfile(data.user.id, classified.email, displayName);
-  return respond({ user: toPublicUser(profile) }, 201, request);
+  return respond({ user: toSelfUser(profile) }, 201, request);
 }
 
 export async function loginWithPassword(request: Request) {
@@ -103,7 +103,7 @@ export async function loginWithPassword(request: Request) {
   });
   if (error) return authFailure(error, request);
   const profile = await ensureProfile(data.user.id, classified.email);
-  return respond({ user: toPublicUser(profile) }, 200, request);
+  return respond({ user: toSelfUser(profile) }, 200, request);
 }
 
 /** Where the confirmation link lands: the web origin, which serves /api too. */

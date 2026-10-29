@@ -8,6 +8,7 @@ import type { PublicUser, UserKind } from "@idlebot/contract";
 import { classifyEmail, parseBotStatus } from "@/lib/market-rules";
 import { cookieSupabase, plainSupabase } from "@/lib/supabase";
 import { looksLikeApiKey, userForApiKey } from "@/lib/api-keys";
+import { normalizeAddress } from "@/lib/bounty/x402";
 
 export type { PublicUser };
 
@@ -28,6 +29,27 @@ export function toPublicUser(row: UserRow): PublicUser {
     status,
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+/** The caller's own profile, with private fields such as the payout wallet. */
+export function toSelfUser(row: UserRow): PublicUser {
+  return { ...toPublicUser(row), walletAddress: row.walletAddress ?? null };
+}
+
+/** PATCH /api/me. Only walletAddress for now; null or "" clears it. */
+export async function updateMe(row: UserRow, body: unknown) {
+  if (!body || typeof body !== "object" || !("walletAddress" in body)) {
+    throw new HttpError(400, "Nothing to update (walletAddress)");
+  }
+  const wallet = normalizeAddress((body as { walletAddress: unknown }).walletAddress);
+  if (wallet && typeof wallet === "object") throw new HttpError(400, wallet.error);
+  const [updated] = await getDb()
+    .update(user)
+    .set({ walletAddress: wallet, updatedAt: new Date() })
+    .where(eq(user.id, row.id))
+    .returning();
+  if (!updated) throw new HttpError(404, "User not found");
+  return toSelfUser(updated);
 }
 
 /** Profile row for a Supabase user. Kind comes from the email domain, never from input. */
@@ -98,5 +120,5 @@ export async function updateBotStatus(row: UserRow, rawStatus: unknown) {
     .where(eq(user.id, row.id))
     .returning();
   if (!updated) throw new HttpError(404, "User not found");
-  return toPublicUser(updated);
+  return toSelfUser(updated);
 }

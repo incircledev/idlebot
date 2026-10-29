@@ -44,10 +44,8 @@ export function parseTaskStatus(
   value: string | null,
 ): TaskStatus | { error: string } {
   if (value === null || value === "") return "open";
-  if (value === "open" || value === "in_progress" || value === "completed") {
-    return value;
-  }
-  return { error: "status must be one of: open, in_progress, completed" };
+  if ((TASK_STATUSES as readonly string[]).includes(value)) return value as TaskStatus;
+  return { error: `status must be one of: ${TASK_STATUSES.join(", ")}` };
 }
 
 export function parseBotStatus(value: unknown): BotStatus | { error: string } {

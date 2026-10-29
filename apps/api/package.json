@@ -9,7 +9,7 @@
     "lint": "eslint",
     "db:push": "drizzle-kit push",
     "db:seed": "tsx scripts/seed.ts",
-    "test": "tsx --test src/lib/market-rules.test.ts src/lib/complete-rules.test.ts src/lib/cors.test.ts",
+    "test": "tsx --test src/lib/market-rules.test.ts src/lib/complete-rules.test.ts src/lib/cors.test.ts src/lib/bounty/money.test.ts",
     "accept": "bash scripts/accept.sh",
     "x402:demo": "tsx scripts/x402-proto/demo.ts"
   },
