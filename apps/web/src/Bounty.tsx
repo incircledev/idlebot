@@ -35,7 +35,18 @@ export function PayingDialog(props: {
   onRetry: () => void
 }) {
   const { title, bounty, stage, error, onCancel, onRetry } = props
-  const label = stage === 'settling' ? '正在确认付款…' : stage === 'requesting' ? '正在创建付款请求…' : '等待钱包签名…'
+  const label =
+    stage === 'settling' ? '链上确认中，约需 10 秒…' : stage === 'requesting' ? '正在创建付款请求…' : '等待钱包签名…'
+  // After signing, the facilitator settles on chain (retrying when it is busy): reassure after 20 s.
+  const [slow, setSlow] = useState(false)
+  useEffect(() => {
+    if (stage !== 'settling') return
+    const id = setTimeout(() => setSlow(true), 20_000)
+    return () => {
+      clearTimeout(id)
+      setSlow(false)
+    }
+  }, [stage])
   return (
     <div className="scrim">
       <div className="dialog" role="dialog" aria-label="支付赏金">
@@ -61,10 +72,13 @@ export function PayingDialog(props: {
         {stage === 'error' ? (
           <p className="errt pay-err">{error}</p>
         ) : (
-          <div className="waiting">
-            <span className="spinner" />
-            {label}
-          </div>
+          <>
+            <div className="waiting">
+              <span className="spinner" />
+              {label}
+            </div>
+            {stage === 'settling' && slow && <div className="waiting-slow">网络较慢，请勿关闭页面</div>}
+          </>
         )}
         <div className="help">只需签一次名，不需要测试 ETH。赏金先由平台代管，验收通过后打给领取人。</div>
         <div className="dialog-actions">
