@@ -1,36 +1,44 @@
-// x402-proto variant of confirm.mjs: web :5191 (worktree), e1 screen 「验证邮件已发送」 + 60 s cooldown.
+// Auth-screen shots against a Vite dev server in API mode (VITE_USE_API=1). Every /api call is stubbed.
+// BASE (default x402 :5191), OUT, PREFIX ('' -> 2-unconfirmed-login / 2b-… / 3-link-failed; 'main-' -> main-2 / main-3).
 import { chromium } from 'playwright'
 const out = process.env.OUT ?? '/workspace/shots-confirm'
 const U = process.env.BASE ?? 'http://127.0.0.1:5191/'
+const main = process.env.PREFIX === 'main-'
+const name = (n) => (main ? `main-${n[0]}${n[1] === 'b' ? 'b' : ''}.png` : `${n}.png`)
 const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox'] })
-const ctx = await b.newContext({ viewport: { width: 1024, height: 640 }, deviceScaleFactor: 2, locale: 'zh-CN', timezoneId: 'Asia/Shanghai' })
-const stub = async (p) => {
-  await p.route('**/api/auth/register', (r) => r.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ needsEmailConfirmation: true, email: 'newbie@example.com' }) }))
-  await p.route('**/api/auth/login', (r) => r.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Email not confirmed', code: 'email_not_confirmed' }) }))
-  await p.route('**/api/auth/resend', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ sent: true }) }))
+const json = (status, body) => (r) => r.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+const page = async () => {
+  const ctx = await b.newContext({ viewport: { width: 1024, height: 640 }, deviceScaleFactor: 2, locale: 'zh-CN', timezoneId: 'Asia/Shanghai' })
+  const p = await ctx.newPage()
+  await p.route('**/api/**', json(401, { error: 'Not signed in', code: 'unauthorized' }))
+  await p.route('**/api/auth/register', json(202, { needsEmailConfirmation: true, email: 'newbie@example.com' }))
+  await p.route('**/api/auth/login', json(403, { error: 'Email not confirmed', code: 'email_not_confirmed' }))
+  await p.route('**/api/auth/resend', json(200, { sent: true }))
+  return p
 }
-const login = async (p) => {
-  await p.locator('form.auth').getByRole('button', { name: '登录', exact: true }).first().click()
-  await p.getByPlaceholder('you@example.com').fill('newbie@example.com'); await p.getByPlaceholder('至少 8 位').fill('demo12345')
-  await p.locator('form button[type=submit]').click(); await p.getByText('重新发送确认邮件').waitFor()
+const fill = async (p) => {
+  await p.getByPlaceholder('you@example.com').fill('newbie@example.com')
+  await p.getByPlaceholder('至少 8 位').fill('demo12345')
+  await p.locator('form button[type=submit]').click()
 }
-const p = await ctx.newPage(); await stub(p)
+// 2: fresh visitor signs in before confirming -> inline orange 重新发送 link.
+const p = await page()
 await p.goto(U); await p.locator('form.auth').waitFor()
-await p.locator('form.auth').getByRole('button', { name: '注册', exact: true }).first().click()
-await p.getByPlaceholder('you@example.com').fill('newbie@example.com'); await p.getByPlaceholder('至少 8 位').fill('demo12345')
-await p.locator('form button[type=submit]').click(); await p.getByText('验证邮件已发送').waitFor()
-await p.waitForTimeout(1500)
-await p.screenshot({ path: `${out}/1-pending.png` })
-await p.getByText('换个邮箱').click(); await p.locator('form.auth').waitFor()
-await login(p); await p.waitForTimeout(300)
-await p.screenshot({ path: `${out}/2-unconfirmed-login.png` })
-await p.goto(U + '?confirm=failed'); await p.waitForTimeout(500)
-await p.screenshot({ path: `${out}/3-link-failed.png` })
-// Extra: a fresh visitor (no cooldown yet) resends from the login screen -> toast + countdown.
-const p2 = await ctx.newPage(); await stub(p2)
-await p2.goto(U); await p2.locator('form.auth').waitFor(); await login(p2)
-await p2.getByRole('button', { name: '重新发送确认邮件' }).click()
-await p2.getByText('已重新发送，60 秒后可再发').waitFor(); await p2.waitForTimeout(1200)
-await p2.screenshot({ path: `${out}/4-resend-toast.png` })
+await p.locator('.seg-block').getByRole('button', { name: '登录', exact: true }).click()
+await fill(p); await p.getByRole('button', { name: '重新发送', exact: true }).waitFor()
+await p.screenshot({ path: `${out}/${name('2-unconfirmed-login')}` })
+// 2b: click it -> toast + grey countdown.
+await p.getByRole('button', { name: '重新发送', exact: true }).click()
+await p.getByText('已重新发送，60 秒后可再发').waitFor(); await p.waitForTimeout(2200)
+await p.screenshot({ path: `${out}/${name('2b-unconfirmed-cooldown')}` })
+// 3: someone registered in this browser, then opens an expired link in a new tab.
+const q = await page()
+await q.goto(U); await q.locator('form.auth').waitFor()
+await q.locator('.seg-block').getByRole('button', { name: '注册', exact: true }).click()
+await fill(q); await q.waitForTimeout(800)
+const r = await q.context().newPage()
+await r.route('**/api/**', json(401, { error: 'Not signed in', code: 'unauthorized' }))
+await r.goto(U + '?confirm=failed'); await r.locator('form.auth').waitFor(); await r.waitForTimeout(500)
+await r.screenshot({ path: `${out}/${name('3-link-failed')}` })
+console.log('tab:', await r.locator('.seg-block button.on').innerText(), 'email:', await r.getByPlaceholder('you@example.com').inputValue(), 'submit:', await r.locator('form button[type=submit]').innerText())
 await b.close()
-console.log('ok')
