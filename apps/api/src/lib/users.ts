@@ -3,10 +3,10 @@ import { headers } from "next/headers";
 import { connection } from "next/server";
 import { user, type UserRow } from "@/db/schema";
 import { getDb } from "@/db/client";
-import { getAuth } from "@/lib/auth";
 import { HttpError } from "@/lib/http";
 import type { PublicUser, UserKind } from "@idlebot/contract";
-import { parseBotStatus } from "@/lib/market-rules";
+import { classifyEmail, parseBotStatus } from "@/lib/market-rules";
+import { cookieSupabase, plainSupabase } from "@/lib/supabase";
 
 export type { PublicUser };
 
@@ -29,16 +29,53 @@ export function toPublicUser(row: UserRow): PublicUser {
   };
 }
 
+/** Profile row for a Supabase user. Kind comes from the email domain, never from input. */
+export async function ensureProfile(id: string, rawEmail: string, displayName?: string) {
+  const db = getDb();
+  const [existing] = await db.select().from(user).where(eq(user.id, id)).limit(1);
+  if (existing) return existing;
+  const classified = classifyEmail(rawEmail);
+  if ("error" in classified) throw new HttpError(403, classified.error);
+  const name = (displayName || classified.email.split("@")[0]).trim();
+  const [created] = await db
+    .insert(user)
+    .values({
+      id,
+      email: classified.email,
+      name,
+      displayName: name,
+      kind: classified.kind,
+      status: classified.kind === "bot" ? "idle" : null,
+    })
+    .onConflictDoNothing()
+    .returning();
+  if (created) return created;
+  const [raced] = await db.select().from(user).where(eq(user.id, id)).limit(1);
+  if (!raced) throw new HttpError(500, "Profile was not stored");
+  return raced;
+}
+
+/** Verified Supabase identity from `Authorization: Bearer` or the session cookies. */
+async function currentIdentity() {
+  const auth = (await headers()).get("authorization");
+  const bearer = auth?.match(/^Bearer\s+(.+)$/i)?.[1];
+  const { data, error } = bearer
+    ? await plainSupabase().auth.getClaims(bearer)
+    : await (await cookieSupabase()).auth.getClaims();
+  if (error || !data?.claims?.sub || !data.claims.email) return null;
+  const meta = data.claims.user_metadata as { display_name?: unknown } | undefined;
+  return {
+    id: data.claims.sub,
+    email: String(data.claims.email),
+    displayName: typeof meta?.display_name === "string" ? meta.display_name : undefined,
+  };
+}
+
 export async function requireUser() {
   await connection();
-  const session = await getAuth().api.getSession({ headers: await headers() });
-  if (!session?.user) return null;
-  const [row] = await getDb()
-    .select()
-    .from(user)
-    .where(eq(user.id, session.user.id))
-    .limit(1);
-  return row ?? null;
+  const identity = await currentIdentity();
+  if (!identity) return null;
+  return ensureProfile(identity.id, identity.email, identity.displayName);
 }
 
 export async function requireUserOrThrow() {
