@@ -10,13 +10,17 @@
     "db:push": "drizzle-kit push",
     "db:seed": "tsx scripts/seed.ts",
     "test": "tsx --test src/lib/market-rules.test.ts src/lib/complete-rules.test.ts src/lib/cors.test.ts",
-    "accept": "bash scripts/accept.sh"
+    "accept": "bash scripts/accept.sh",
+    "x402:demo": "tsx scripts/x402-proto/demo.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
     "@idlebot/contract": "workspace:*",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.118.0",
+    "@x402/core": "2.29.0",
+    "@x402/evm": "2.29.0",
+    "@x402/fetch": "2.29.0",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.5.0",
     "drizzle-orm": "^0.45.4",
@@ -26,7 +30,8 @@
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "shadcn": "^4.22.1",
-    "tw-animate-css": "^1.4.0"
+    "tw-animate-css": "^1.4.0",
+    "viem": "2.57.13"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",
