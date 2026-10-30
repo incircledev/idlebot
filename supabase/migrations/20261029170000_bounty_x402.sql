@@ -1,5 +1,4 @@
 -- Bounty P0 (x402, Base Sepolia, option A: the platform wallet holds the bounty).
--- NOT applied to the hosted project yet. Apply before any preview deploy of x402-proto.
 
 -- Payout address for bounty tasks. Checked as 0x + 40 hex; the API stores the checksummed form.
 alter table public.profiles
